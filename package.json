@@ -25,12 +25,13 @@
   ],
   "scripts": {
     "build": "rm -rf ./dist && tsup && tsx ./ci/bundle-package-json.ts",
+    "check": "tsc --noEmit && pnpm lint",
     "watch": "tsx --watch src/main.ts",
     "lint": "eslint \"**/{src,ci,test}/**/*.{ts,mjs}\"",
     "lint-fix": "pnpm lint --fix",
     "docker-build": "docker build -f ./ci/dockerfile -t juemrami/wow-dev-mcp .",
-    "docker-publish": "pnpm docker-build && docker push juemrami/wow-dev-mcp:latest",
-    "prepublishOnly": "pnpm build"
+    "docker-publish": "pnpm docker-build && docker push juemrami/wow-dev-mcp:development",
+    "prepublishOnly": "pnpm check && pnpm build"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.6",
