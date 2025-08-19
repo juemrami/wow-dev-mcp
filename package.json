@@ -1,0 +1,41 @@
+{
+  "name": "wow-dev-mcp",
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.14.0",
+  "license": "MIT",
+  "description": "MCP server for World of Warcraft UI development",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juemrami/wow-dev-mcp"
+  },
+  "scripts": {
+    "build": "tsup",
+    "watch": "tsx --watch src/main.ts",
+    "lint": "eslint \"**/{src,test}/**/*.{ts,mjs}\"",
+    "lint-fix": "pnpm lint --fix"
+  },
+  "devDependencies": {
+    "@effect/ai": "^0.26.0",
+    "@effect/eslint-plugin": "^0.3.2",
+    "@effect/language-service": "^0.35.2",
+    "@effect/platform": "^0.90.4",
+    "@effect/platform-node": "^0.96.0",
+    "@effect/rpc": "^0.69.0",
+    "@effect/vitest": "^0.25.1",
+    "@eslint/compat": "1.1.1",
+    "@eslint/eslintrc": "3.1.0",
+    "@eslint/js": "9.10.0",
+    "@types/node": "^22.17.2",
+    "@typescript-eslint/eslint-plugin": "^8.40.0",
+    "@typescript-eslint/parser": "^8.40.0",
+    "effect": "^3.17.7",
+    "eslint": "^9.33.0",
+    "eslint-import-resolver-typescript": "^3.10.1",
+    "eslint-plugin-import": "^2.32.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
