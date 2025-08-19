@@ -15,7 +15,3 @@ scratchpad/*
 .env.development.local
 .env.test.local
 .env.production.local
-
-# temporarily exclude gh actions
-.github/actions
-.github/workflows
