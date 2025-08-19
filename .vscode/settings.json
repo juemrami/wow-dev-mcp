@@ -13,5 +13,8 @@
         "**/Thumbs.db": true
     },
     "hide-files.files": [],
-    "git.enabled": false
+    "git.enabled": false,
+    "cSpell.words": [
+        "fuzzysort"
+    ]
 }
