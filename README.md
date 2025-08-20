@@ -27,16 +27,16 @@ To use this MCP server with VS Code and GitHub Copilot:
         - or **"MCP: Open Workspace Configuration"**
 4. Modify the `servers` section by adding the the project as a stdio mcp server:
 
-```json
+```js
 {
     "servers" : {
-        // ...
+        // ... other mcp servers
         "wow-dev-mcp": {
             "type": "stdio",
             "command": "node",
             // replace 'path/to/project' with your actual project path
             "args": [
-                "path/to/project/src/dist/main.cjs"
+                "path/to/project/dist/main.cjs"
             ]
         }
     }
@@ -48,11 +48,11 @@ To use this MCP server with VS Code and GitHub Copilot:
 ### Global Strings Toolkit
 Currently, this is the only tool the MCP server provides. It includes:
 
-- **Find Global Strings** - Search for global string keys with content similar to a query
-- **Get Global String Contents** - Retrieve translated string contents for a specific global string key
-- **List Global String Keys** - List all available global string keys for a game client
+- **Find Global Strings `find_global_strings`** - Search for available global strings with content similar to a given query
+- **Get Global Strings `get_global_strings_for_keys`** - Retrieve translated string contents for a specific global string key
+- **List Global String Keys `list_global_string_keys`** - List all available global string keys for a game client, (useful to give agent context)
 
-The toolkit supports multiple WoW game flavors:
+The toolkit supports multiple WoW game client flavors:
 - `mainline` - Current retail version
 - `mists` - Mists of Pandaria Classic
 - `vanilla` - Classic WoW
@@ -69,6 +69,9 @@ and WoW game client locales:
 - `ruRU` - Russian
 - `zhCN` - Chinese (Simplified)
 - `zhTW` - Chinese (Traditional)
+
+> Note: You may need to specify to the agent to use a specific game flavor
+**todo**: add tool/prompt for scanning `.toc` file to determine best client flavor(s)
 
 ## Development
 
