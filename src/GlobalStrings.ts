@@ -40,33 +40,48 @@ const GlobalStringContent = Schema.String.annotations({
 const toolkit = AiToolkit.make(
   AiTool.make("find_global_strings", {
     description: `Searches for global strings keys with content similar to a given plaintext query.
-      For 1-2 word queries, use a higher threshold (e.g. 0.5) for better results.
-      For longer queries, a lower threshold (e.g. 0.08 to 0) and a higher limit may be more appropriate.
+      For 1-2 word queries, use \`threshold\` (e.g. [0.2, 0.5]) (lower for fuzzier results).
+      For longer queries, a lower \`threshold\` (e.g. 0.08 to 0) and a higher result \`limit\` may be more appropriate.
+      eg:\n
+        If a user want strings similar to a label, "Hide Delisted Entries", they might use:\n
+          - \`threshold: 0.1\`, \`limit: 30\`\n
+        If a user want strings similar to a longer phrase, like "Alt+Click to Request to Join Group", they might use:\n
+          - \`threshold: 0\`, \`limit: 200\`\n
+          - this will get top 200 closest matches.\n
+        If as user wants near exact matches, say for smaller labels like "This Week", they might use:\n
+          - \`threshold: 0.8\`, \`limit: 20\`\n
+          - this will only get top 20 results with more than 80% similarity.\n
     `,
     parameters: {
       query: Schema.String.annotations({
         description:
-          "The search query to look for in the global strings, eg; `\"Missing Item\"`, `\"Not enough currency.\"`"
+          "The query to match against existing global strings. Expected single words or simple phrases eg; `\"Missing Item\"`, `\"Not enough currency.\"`"
       }),
-      threshold: Schema.Number.pipe(Schema.between(0, 1)).annotations({
+      threshold: Schema.UndefinedOr(
+        Schema.Number.pipe(Schema.between(0, 1))
+      ).annotations({
         description: `Threshold to control the strictness of the search.
           Recommendations:
             <= 0.8 for any exact matches;
-            ~0.5 for single word queries;
+            =0.5 for single word queries;
+            =0.2 for 2-3 word queries;
             >= 0.08 for phrases.`,
         default: DEFAULT_SEARCH_THRESHOLD
       }),
-      limit: Schema.Number.pipe(Schema.between(0, 100)).annotations({
+      limit: Schema.UndefinedOr(
+        Schema.Number.pipe(Schema.between(0, 100))
+      ).annotations({
         description: "The maximum number of results to return. 0 means no limit.",
         default: DEFAULT_SEARCH_RESULT_LIMIT
       })
     },
-    success: Schema.Array(
-      Schema.Struct({
-        globalKey: GlobalStringKey,
-        content: GlobalStringContent
-      })
-    ).annotations({ description: "Array of global strings similar to the query." })
+    success: Schema.Record({
+      key: GlobalStringKey,
+      value: Schema.partial(Schema.Record({
+        key: Schema.Literal(...SupportedLangCodes),
+        value: GlobalStringContent
+      }))
+    }).annotations({ description: "A record of global strings matching the given query params, by global key." })
   }),
   AiTool.make("list_global_string_keys", {
     description: "Lists all global string keys for a given game client.",
@@ -90,12 +105,12 @@ const toolkit = AiToolkit.make(
     },
     success: Schema.Record({
       key: GlobalStringKey,
-      value: Schema.Record({
+      value: Schema.partial(Schema.Record({
         key: Schema.Literal(...SupportedLangCodes).annotations({
           description: "The WoW game client locale code for the translation."
         }),
         value: GlobalStringContent
-      })
+      }))
     }).annotations({
       description: "The translations for a global string in all supported client languages."
     })
@@ -207,6 +222,7 @@ const ToolkitLayer = toolkit
       const search = (
         query: string,
         threshold: number = DEFAULT_SEARCH_THRESHOLD,
+        limit: number = DEFAULT_SEARCH_RESULT_LIMIT,
         flavor: SupportedGameFlavor = DEFAULT_CLIENT_VERSION_FLAVOR,
         language: SupportedLang = DEFAULT_WOW_LOCALE
       ) => {
@@ -218,7 +234,8 @@ const ToolkitLayer = toolkit
             const langs = [language]
             return fuzzysort.go(query, createFuzzySearchTargets(globalMaps, langs), {
               key: FUZZY_SEARCH_KEY,
-              threshold
+              threshold,
+              limit
             }).map((
               x
             ) => x.obj)
@@ -229,13 +246,13 @@ const ToolkitLayer = toolkit
       }
 
       return toolkit.of({
-        find_global_strings: Effect.fn(function*({ query, threshold }) {
-          const results = yield* Effect.orDie(search(query, threshold))
-          return results.map((result) => ({
-            globalKey: result.key,
-            content: result.content
-            // lang: result.lang
-          }))
+        find_global_strings: Effect.fn(function*({ query, threshold, limit }) {
+          const results = yield* Effect.orDie(search(query, threshold, limit))
+          return results.reduce((acc, result) => {
+            acc[result.key] = acc[result.key] || {}
+            acc[result.key][result.lang] = result.content
+            return acc
+          }, {} as Record<GlobalKey, Record<SupportedLang, string>>)
         }),
         list_global_string_keys: Effect.fn(function*({ client }) {
           const keys = yield* Resource.get(globalStringsByFlavorMap).pipe(
