@@ -4,6 +4,12 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
 import fuzzysort from "fuzzysort"
 
+const DEFAULT_SEARCH_THRESHOLD = 0.08
+const DEFAULT_CLIENT_VERSION_FLAVOR = "mainline"
+const DEFAULT_WOW_LOCALE = "enUS"
+const FUZZY_SEARCH_KEY = "target"
+const DEFAULT_SEARCH_RESULT_LIMIT = 25
+
 const SupportedGameFlavors = ["mainline", "mists", "vanilla"] as const
 type SupportedGameFlavor = typeof SupportedGameFlavors[number]
 const SupportedLangCodes = [
@@ -33,16 +39,26 @@ const GlobalStringContent = Schema.String.annotations({
 
 const toolkit = AiToolkit.make(
   AiTool.make("find_global_strings", {
-    description: "Searches for global strings keys with content similar to a given query.",
+    description: `Searches for global strings keys with content similar to a given plaintext query.
+      For 1-2 word queries, use a higher threshold (e.g. 0.5) for better results.
+      For longer queries, a lower threshold (e.g. 0.08 to 0) and a higher limit may be more appropriate.
+    `,
     parameters: {
       query: Schema.String.annotations({
         description:
           "The search query to look for in the global strings, eg; `\"Missing Item\"`, `\"Not enough currency.\"`"
       }),
       threshold: Schema.Number.pipe(Schema.between(0, 1)).annotations({
-        description:
-          "Threshold to control the strictness of the search. 1 will return perfect matches only, while 0 will return anything.",
-        default: 0.3
+        description: `Threshold to control the strictness of the search.
+          Recommendations:
+            <= 0.8 for any exact matches;
+            ~0.5 for single word queries;
+            >= 0.08 for phrases.`,
+        default: DEFAULT_SEARCH_THRESHOLD
+      }),
+      limit: Schema.Number.pipe(Schema.between(0, 100)).annotations({
+        description: "The maximum number of results to return. 0 means no limit.",
+        default: DEFAULT_SEARCH_RESULT_LIMIT
       })
     },
     success: Schema.Array(
@@ -56,7 +72,7 @@ const toolkit = AiToolkit.make(
     description: "Lists all global string keys for a given game client.",
     parameters: {
       client: Schema.Literal(...SupportedGameFlavors).annotations({
-        default: "mainline",
+        default: DEFAULT_CLIENT_VERSION_FLAVOR,
         description: "The WoW game client flavor to list global string keys for."
       })
     },
@@ -64,19 +80,22 @@ const toolkit = AiToolkit.make(
       description: "Array of global string keys for the specified game client."
     })
   }),
-  AiTool.make("get_global_string_contents", {
-    description: "Get the translated string contents for a given global string key",
+  AiTool.make("get_global_strings_for_keys", {
+    description: "Get the translated string contents for a given a _set_ global string keys and client flavor",
     parameters: {
-      globalKey: GlobalStringKey,
+      globalKeys: Schema.Array(GlobalStringKey),
       client: Schema.Literal(...SupportedGameFlavors).annotations({
-        default: "mainline"
+        default: DEFAULT_CLIENT_VERSION_FLAVOR
       })
     },
     success: Schema.Record({
-      key: Schema.Literal(...SupportedLangCodes).annotations({
-        description: "The WoW game client locale code for the translation."
-      }),
-      value: GlobalStringContent
+      key: GlobalStringKey,
+      value: Schema.Record({
+        key: Schema.Literal(...SupportedLangCodes).annotations({
+          description: "The WoW game client locale code for the translation."
+        }),
+        value: GlobalStringContent
+      })
     }).annotations({
       description: "The translations for a global string in all supported client languages."
     })
@@ -153,7 +172,7 @@ const ToolkitLayer = toolkit
 
       type FuzzyResult = {
         key: string
-        target: string
+        [FUZZY_SEARCH_KEY]: string
         content: string
         lang: SupportedLang
       }
@@ -174,7 +193,7 @@ const ToolkitLayer = toolkit
               if (content) {
                 targets.push({
                   key: globalKey,
-                  target: content.toLowerCase(),
+                  [FUZZY_SEARCH_KEY]: content.toLowerCase(),
                   content,
                   lang: lang as SupportedLang
                 })
@@ -187,9 +206,9 @@ const ToolkitLayer = toolkit
 
       const search = (
         query: string,
-        threshold: number = 0.3,
-        flavor: SupportedGameFlavor = "mainline",
-        language: SupportedLang = "enUS"
+        threshold: number = DEFAULT_SEARCH_THRESHOLD,
+        flavor: SupportedGameFlavor = DEFAULT_CLIENT_VERSION_FLAVOR,
+        language: SupportedLang = DEFAULT_WOW_LOCALE
       ) => {
         query = query.toLowerCase()
         return Effect.logDebug("searching").pipe(
@@ -197,7 +216,10 @@ const ToolkitLayer = toolkit
           Effect.map((globalsByFlavor) => {
             const globalMaps = [globalsByFlavor[flavor]]
             const langs = [language]
-            return fuzzysort.go(query, createFuzzySearchTargets(globalMaps, langs), { key: "target", threshold }).map((
+            return fuzzysort.go(query, createFuzzySearchTargets(globalMaps, langs), {
+              key: FUZZY_SEARCH_KEY,
+              threshold
+            }).map((
               x
             ) => x.obj)
           }),
@@ -225,11 +247,19 @@ const ToolkitLayer = toolkit
           )
           return keys
         }),
-        get_global_string_contents: Effect.fn(function*({ globalKey, client }) {
+        get_global_strings_for_keys: Effect.fn(function*({ globalKeys, client }) {
           const translations = yield* Resource.get(globalStringsByFlavorMap).pipe(
             Effect.map((globalsByFlavor) => {
-              const x = globalsByFlavor[client]
-              return x[globalKey]
+              const clientGlobals = globalsByFlavor[client]
+              const result: Record<string, Record<SupportedLang, string>> = {}
+
+              for (const key of globalKeys) {
+                if (clientGlobals[key]) {
+                  result[key] = clientGlobals[key]
+                }
+              }
+
+              return result
             }),
             Effect.orDie
           )
