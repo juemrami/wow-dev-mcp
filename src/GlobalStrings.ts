@@ -10,8 +10,8 @@ const DEFAULT_WOW_LOCALE = "enUS"
 const FUZZY_SEARCH_KEY = "target"
 const DEFAULT_SEARCH_RESULT_LIMIT = 25
 
-const SupportedGameFlavors = ["mainline", "mists", "vanilla"] as const
-type SupportedGameFlavor = typeof SupportedGameFlavors[number]
+export const SupportedGameFlavors = ["mainline", "mists", "vanilla"] as const
+export type SupportedGameFlavor = typeof SupportedGameFlavors[number]
 const SupportedLangCodes = [
   "enUS",
   "frFR",
