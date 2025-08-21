@@ -1,6 +1,6 @@
 // how are we gonna get the urls
 
-import { AiTool, AiToolkit, McpServer } from "@effect/ai"
+import { AiTool, AiToolkit, McpSchema, McpServer } from "@effect/ai"
 import { HttpBody, HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
 import { Cache, Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
@@ -22,7 +22,7 @@ import { SupportedGameFlavors } from "./GlobalStrings.js"
 //     }
 //   }
 // }
-
+const HTTP_REQUEST_TIMEOUT_DURATION = Duration.seconds(15)
 type GlobalAPIName = string
 const findSimilarGlobals = (
   query: string,
@@ -43,12 +43,93 @@ const findSimilarGlobals = (
     return acc
   }, [] as Array<GlobalAPIName>)
 }
-const getGlobalAPIFileUrl = (flavor: SupportedGameFlavor) =>
-  `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${flavor}/Resources/GlobalAPI.lua`
+
+class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
+  "@app/GlobalAPIListProvider",
+  {
+    scoped: Effect.gen(function*() {
+      const httpClient = (yield* HttpClient.HttpClient).pipe(
+        HttpClient.filterStatusOk,
+        HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
+      )
+      const getGlobalAPIFileUrl = (flavor: SupportedGameFlavor) =>
+        `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${flavor}/Resources/GlobalAPI.lua`
+
+      const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedGameFlavor) {
+        const text = yield* pipe(
+          httpClient.get(getGlobalAPIFileUrl(version)),
+          Effect.timeout(HTTP_REQUEST_TIMEOUT_DURATION),
+          Effect.andThen(HttpClientResponse.filterStatusOk),
+          Effect.flatMap((r) => r.text)
+        )
+        const collectedGlobals = [] as Array<GlobalAPIName>
+        for (const line of text.split("\n")) {
+          if (line.match(/[{}]/)) continue // ignore lines with braces { }
+          if (line.trim().length === 0) continue // ignore empty lines
+          const match = line.match(/"(\w+)"/)
+          if (match) {
+            collectedGlobals.push(match[1])
+          }
+        }
+        return collectedGlobals
+      })
+
+      const cachedGlobalsByGameVersion = yield* Resource.auto(
+        Effect.gen(function*() {
+          const apiGlobals = {} as Record<SupportedGameFlavor, Array<GlobalAPIName>>
+          for (const gameVersion of SupportedGameFlavors) {
+            apiGlobals[gameVersion] = yield* fetchAndParseApiGlobalsByGameVersion(gameVersion)
+          }
+          return yield* Effect.succeed(apiGlobals)
+        }),
+        Schedule.spaced(Duration.hours(1))
+      )
+      return {
+        get: (gameVersion: SupportedGameFlavor = "mainline") =>
+          Resource.get(cachedGlobalsByGameVersion).pipe(
+            Effect.map((globals) => globals[gameVersion])
+          )
+      }
+    })
+  }
+) {}
+
+const gameVersionParam = McpSchema.param("gameVersion", Schema.Literal(...SupportedGameFlavors))
+const ApiListMcpResource = McpServer
+  .resource`resource://lua_global_apis/valid_api_names?gameVersion=${gameVersionParam}`({
+    name: "Valid global API names by game version",
+    mimeType: "application/json",
+    description:
+      `A dynamic resource that lists all valid global API names for a given game version. The game version can be one of [${
+        SupportedGameFlavors.join(", ")
+      }]. Intended for human browsing or bulk reasoning, not per-query (use the tool for that)`,
+    completion: {
+      gameVersion: () => Effect.succeed([...SupportedGameFlavors])
+    },
+    content: (_, gameVersion) =>
+      Effect.gen(function*() {
+        const globalList = yield* GlobalAPIListProvider
+        const apiGlobals = yield* globalList.get(gameVersion).pipe(Effect.orDie)
+        return JSON.stringify(apiGlobals, null, 2)
+      })
+  })
 
 const find_global_apis = "find_global_apis"
 const get_global_wiki_info = "get_global_api_wiki_info"
+const list_valid_global_apis = "list_valid_global_apis"
 const Toolkit = AiToolkit.make(
+  AiTool.make(list_valid_global_apis, {
+    description: `Lists all global APIs for the specified game version.`,
+    parameters: {
+      gameVersion: Schema.Literal(...SupportedGameFlavors).annotations({
+        description: `The game version to filter the search by. One of [${SupportedGameFlavors.join(", ")}]`,
+        default: "mainline"
+      })
+    },
+    success: Schema.Array(Schema.String).annotations({
+      description: "The list of all valid global API names for a given live game version client"
+    })
+  }),
   AiTool.make(find_global_apis, {
     description: `Searches for any global APIs similar to a given api name(s). Can optionally provide a game version.\n
     \`query\`: should be a string the global API variable names to search for.\n
@@ -96,37 +177,7 @@ const ToolKitLayer = Toolkit.toLayer(
       HttpClient.filterStatusOk,
       HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
     )
-
-    const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedGameFlavor) {
-      const text = yield* pipe(
-        httpClient.get(getGlobalAPIFileUrl(version)),
-        Effect.andThen(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((r) => r.text)
-      )
-
-      const apiGlobals = [] as Array<GlobalAPIName>
-      for (const line of text.split("\n")) {
-        if (line.match(/[{}]/)) continue // ignore lines with braces { }
-        if (line.trim().length === 0) continue // ignore empty lines
-        const match = line.match(/"(\w+)"/)
-        if (match) {
-          apiGlobals.push(match[1])
-        }
-      }
-      return apiGlobals
-    })
-
-    const apiGlobalsByGameVersion = yield* Resource.auto(
-      Effect.gen(function*() {
-        const apiGlobals = {} as Record<SupportedGameFlavor, Array<GlobalAPIName>>
-        for (const gameVersion of SupportedGameFlavors) {
-          // Implement the logic to fetch and parse the API globals by game version
-          apiGlobals[gameVersion] = yield* fetchAndParseApiGlobalsByGameVersion(gameVersion)
-        }
-        return yield* Effect.succeed(apiGlobals)
-      }),
-      Schedule.spaced(Duration.hours(1))
-    )
+    const globalList = yield* GlobalAPIListProvider
     // Todo: move away from string manipulation and use a different text matching library
     // required because fuzzysort is unreliable with CamelCase similarity rankings.
     const wordifyAPI = (name: string) => {
@@ -184,8 +235,11 @@ const ToolKitLayer = Toolkit.toLayer(
     })
 
     return {
+      [list_valid_global_apis]: Effect.fn(function*({ gameVersion }) {
+        return yield* globalList.get(gameVersion).pipe(Effect.orDie)
+      }),
       [find_global_apis]: Effect.fn(function*({ query, gameVersion }) {
-        const availableGlobals = (yield* apiGlobalsByGameVersion.pipe(Effect.orDie))[gameVersion ?? "mainline"]
+        const availableGlobals = yield* globalList.get(gameVersion).pipe(Effect.orDie)
         // Split query into multiple queries if separated by whitespace, |, or -
         // Note: alot of LLM's seem to think that the tool should accept multiple queries at once in a single query param.
         // stupid llms.
@@ -230,7 +284,11 @@ const ToolKitLayer = Toolkit.toLayer(
       })
     }
   })
-).pipe(Layer.provide(NodeHttpClient.layerUndici))
+).pipe(
+  Layer.provideMerge(ApiListMcpResource),
+  Layer.provideMerge(GlobalAPIListProvider.Default),
+  Layer.provide(NodeHttpClient.layerUndici)
+)
 
 export const GlobalAPIToolKit = McpServer.toolkit(Toolkit).pipe(
   Layer.provide(ToolKitLayer)
