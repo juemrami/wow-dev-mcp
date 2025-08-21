@@ -46,19 +46,11 @@ To use this MCP server with VS Code and GitHub Copilot:
 ## Available Tools
 
 ### Global Strings Toolkit
-Currently, this is the only tool the MCP server provides. It includes:
-
 - **Find Global Strings `find_global_strings`** - Search for available global strings with content similar to a given query
 - **Get Global Strings `get_global_strings_for_keys`** - Retrieve translated string contents for a specific global string key
 - **List Global String Keys `list_global_string_keys`** - List all available global string keys for a game client, (useful to give agent context)
 
-The toolkit supports multiple WoW game client flavors:
-- `mainline` - Current retail version
-- `mists` - Mists of Pandaria Classic
-- `vanilla` - Classic WoW
-
-and WoW game client locales:
-
+Support following WoW game client locales (will vary by client version):
 - `enUS` - English (US)
 - `frFR` - French
 - `deDE` - German
@@ -70,8 +62,20 @@ and WoW game client locales:
 - `zhCN` - Chinese (Simplified)
 - `zhTW` - Chinese (Traditional)
 
+### Global API Toolkit
+- **Find Global APIs `find_global_apis`** - Search for global APIs similar to a given API name(s). Supports optional game version filtering
+- **Get Global API Wiki Info `get_global_api_wiki_info`** - Fetch the wiki.gg page content for a specific global API name.
+
+Both toolkits support multiple WoW game client flavors:
+- `mainline` - Current retail version
+- `mists` - Mists of Pandaria Classic
+- `vanilla` - Classic WoW
+
 > Note: You may need to specify to the agent to use a specific game flavor
 **todo**: add tool/prompt for scanning `.toc` file to determine best client flavor(s)
+
+### Known Issues
+ - you may have to try really hard to get your llm to use optional tool parameters correctly. Depends on model.
 
 ## Development
 
