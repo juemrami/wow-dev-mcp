@@ -1,12 +1,27 @@
 // how are we gonna get the urls
 
 import { AiTool, AiToolkit, McpServer } from "@effect/ai"
-import { HttpClient, HttpClientResponse } from "@effect/platform"
+import { HttpBody, HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
-import { Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
+import { Cache, Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
 import fuzzysort from "fuzzysort"
 import type { SupportedGameFlavor } from "./GlobalStrings.js"
 import { SupportedGameFlavors } from "./GlobalStrings.js"
+
+// // find linked api pages in a api description xml response
+// const findLinkedPages = (response: string) => {
+//   const templatesTemplate = /{{(.*?)}}/g
+//   for (const match of response.matchAll(templatesTemplate)) {
+//     const templateContent = match[1]
+//     const isAPITemplate = templateContent.startsWith("api|")
+//     const infoMatch = templateContent.match(infoFromTemplate)
+//     if (infoMatch) {
+//       const apiName = infoMatch[1]
+//       const apiType = infoMatch[2] || "a"
+//       // Do something with apiName and apiType
+//     }
+//   }
+// }
 
 type GlobalAPIName = string
 const findSimilarGlobals = (
@@ -32,6 +47,7 @@ const getGlobalAPIFileUrl = (flavor: SupportedGameFlavor) =>
   `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${flavor}/Resources/GlobalAPI.lua`
 
 const find_global_apis = "find_global_apis"
+const get_global_wiki_info = "get_global_api_wiki_info"
 const Toolkit = AiToolkit.make(
   AiTool.make(find_global_apis, {
     description: `Searches for any global APIs similar to a given api name(s). Can optionally provide a game version.\n
@@ -50,6 +66,28 @@ const Toolkit = AiToolkit.make(
     success: Schema.Array(Schema.String).annotations({
       description: "The list of nearest global API names found."
     })
+  }),
+  AiTool.make(get_global_wiki_info, {
+    description: `Fetches the wiki.gg page for a global API name.`,
+    parameters: {
+      apiName: Schema.String.annotations({
+        description: "The name of the global API to fetch the wiki page for."
+      }),
+      includeHistory: Schema.UndefinedOr(Schema.Boolean).annotations({
+        description:
+          "Tool calls should omit this unless specified by user. If true, includes the full history revisions for the wiki page.",
+        default: false
+      })
+    },
+    success: Schema.Struct({
+      url: Schema.String.annotations({
+        description: "The URL of the wiki.gg page for the global API."
+      }),
+      pageContent: Schema.UndefinedOr(Schema.String).annotations({
+        description: "The MediaWiki XML <page> export of the global API (if the page has any content)."
+      })
+      // links
+    })
   })
 )
 const ToolKitLayer = Toolkit.toLayer(
@@ -58,6 +96,7 @@ const ToolKitLayer = Toolkit.toLayer(
       HttpClient.filterStatusOk,
       HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
     )
+
     const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedGameFlavor) {
       const text = yield* pipe(
         httpClient.get(getGlobalAPIFileUrl(version)),
@@ -94,7 +133,7 @@ const ToolKitLayer = Toolkit.toLayer(
       const [namespace, apiName] = name.split(".", 2)
       const toWords = (string: string) =>
         string
-          .replace(/([A-Z])/g, " $1") // Add space before capital letters
+          .replace(/([A-Z]+)/g, " $1") // Add space before capital letters (ignore CAPS sequences)
           .replace(/[._]/g, " ") // Replace dots/underscores with spaces
           .replace(/\s+/g, " ") // Replace multiple spaces with a single space
           .trim().toLowerCase()
@@ -111,6 +150,39 @@ const ToolKitLayer = Toolkit.toLayer(
         target: wordifyAPI(name)
       })
     )
+    /** @param curonly if true, only include the current/latest revision of the wiki entry */
+    const getPageXMLContent = (pages: string, curonly: boolean = true) =>
+      wikiPageCache.get(`pages=${encodeURIComponent(pages)}&curonly=${curonly ? 1 : 0}`)
+
+    // Cache page XML content requests by body a decent TTL
+    const wikiPageCache = yield* Cache.make({
+      capacity: 5000, // Generous capacity
+      timeToLive: Duration.hours(.5),
+      lookup: Effect.fn(function*(requestBody: string) {
+        const url = `https://warcraft.wiki.gg/wiki/Special:Export`
+        const response = yield* httpClient.post(url, {
+          // Adding content type in the headers doesnt work, have to add it in the body
+          body: HttpBody.text(
+            requestBody,
+            "application/x-www-form-urlencoded"
+          ),
+          headers: {
+            "User-Agent": "wow-dev-mcp/v0"
+            // "Content-Type": "application/x-www-form-urlencoded",
+          }
+        }).pipe(Effect.timeout(Duration.seconds(12)))
+
+        return yield* pipe(
+          HttpClientResponse.filterStatusOk(response),
+          Effect.flatMap((r) => r.text),
+          Effect.map((text) => {
+            const match = text.match(/(<page>.*<\/page>)/s)
+            return match?.[1]
+          })
+        )
+      })
+    })
+
     return {
       [find_global_apis]: Effect.fn(function*({ query, gameVersion }) {
         const availableGlobals = (yield* apiGlobalsByGameVersion.pipe(Effect.orDie))[gameVersion ?? "mainline"]
@@ -123,7 +195,6 @@ const ToolKitLayer = Toolkit.toLayer(
           availableGlobals,
           generateGlobalSearchObject
         )
-
         // Process each query and collect results
         const queryResults: Array<Array<GlobalAPIName>> = []
         for (const singleQuery of queries) {
@@ -133,12 +204,10 @@ const ToolKitLayer = Toolkit.toLayer(
           )
           queryResults.push(results)
         }
-
         // Round-robin interleave results from each query
         const finalResults: Array<GlobalAPIName> = []
         const seenResults = new Set<GlobalAPIName>()
         const maxLength = Math.max(...queryResults.map((results) => results.length))
-
         for (let i = 0; i < maxLength; i++) {
           for (const results of queryResults) {
             if (i < results.length && !seenResults.has(results[i])) {
@@ -147,8 +216,17 @@ const ToolKitLayer = Toolkit.toLayer(
             }
           }
         }
-
         return finalResults.slice(0, 100) as ReadonlyArray<GlobalAPIName>
+      }),
+      [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
+        const url = `https://warcraft.wiki.gg/wiki/API_${apiName}`
+        yield* Effect.log("Fetching wiki page for:", apiName)
+        return {
+          url,
+          pageContent: yield* getPageXMLContent(`API_${apiName}`, !includeHistory).pipe(
+            Effect.orDie
+          )
+        }
       })
     }
   })
