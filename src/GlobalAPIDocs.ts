@@ -165,6 +165,36 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
       HttpClient.filterStatusOk,
       HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
     )
+    // Schema colocated here for now; can be moved/shared later if reused.
+    const ExpandTemplatesSchema = Schema.Struct({
+      expandtemplates: Schema.Struct({
+        wikitext: Schema.String
+      })
+    })
+
+    const expandMediawikiTemplates = (pageContent: string) =>
+      pipe(
+        Effect.log(`Expanding MediaWiki templates for ${pageContent}`),
+        Effect.andThen(
+          httpClient.post(`https://warcraft.wiki.gg/api.php`, {
+            urlParams: {
+              action: "expandtemplates",
+              prop: "wikitext",
+              format: "json"
+            },
+            body: HttpBody.text(
+              `text=${encodeURIComponent(pageContent)}`,
+              "application/x-www-form-urlencoded"
+            ),
+            headers: { "User-Agent": "wow-dev-mcp/v0" }
+          }).pipe(
+            Effect.timeout(HTTP_REQUEST_TIMEOUT_DURATION)
+          )
+        ),
+        Effect.andThen(HttpClientResponse.schemaBodyJson(ExpandTemplatesSchema)),
+        Effect.andThen((decoded) => decoded.expandtemplates.wikitext)
+      )
+
     const pageContentCache = yield* Cache.make({
       capacity: 3000, // Generous capacity
       timeToLive: WIKI_PAGE_CACHE_DURATION,
@@ -186,10 +216,31 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
           HttpClientResponse.filterStatusOk(response),
           Effect.flatMap((r) => r.text),
           // Note: For now just extract the <page> content since the rest is mostly extraneous
-          Effect.map((text) => {
+          Effect.andThen((text) => {
             const match = text.match(/(<page>.*<\/page>)/s)
             return match?.[1]
-          })
+          }),
+          Effect.andThen(Effect.fn(function*(pageContent) {
+            // yield* Effect.log(`Expanding MediaWiki templates for ${pageContent}`)
+            if (pageContent && pageContent.includes("{{")) {
+              const expandedContent = yield* expandMediawikiTemplates(
+                // this template transcludes to mostly general information about the wiki
+                pageContent.replace("{{wowapi}}", "")
+              ).pipe(
+                Effect.catchTag("ParseError", (err) =>
+                  pipe(
+                    Effect.logError(`Failed to expand MediaWiki templates for ${requestBody}`, err),
+                    Effect.andThen(Effect.succeed(pageContent))
+                  )),
+                // remove all `<style>`, <font>, <span> tags (useless info)
+                Effect.andThen((expandedContent) => expandedContent.replaceAll(/<style\s?.*?>(.*?)<\/style>/gs, "$1")),
+                Effect.andThen((expandedContent) => expandedContent.replaceAll(/<font\s?.*?>(.*?)<\/font>/gs, "$1")),
+                Effect.andThen((expandedContent) => expandedContent.replaceAll(/<span\s?.*?>(.*?)<\/span>/gs, "$1"))
+              )
+              return expandedContent
+            }
+            return pageContent
+          }))
         )
       })
     })
