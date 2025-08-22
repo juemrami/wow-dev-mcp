@@ -1,5 +1,3 @@
-// how are we gonna get the urls
-
 import { AiTool, AiToolkit, McpSchema, McpServer } from "@effect/ai"
 import { HttpBody, HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
@@ -25,25 +23,6 @@ import { SupportedGameFlavors } from "./GlobalStrings.js"
 const HTTP_REQUEST_TIMEOUT_DURATION = Duration.seconds(15)
 const WIKI_PAGE_CACHE_DURATION = Duration.hours(1)
 type GlobalAPIName = string
-const findSimilarGlobals = (
-  query: string,
-  targets: Array<{
-    key: GlobalAPIName
-    target: string
-  }>
-) => {
-  const results = fuzzysort.go(query, targets, {
-    threshold: 0.1,
-    limit: 100,
-    key: "target"
-  })
-  console.error("query:", query)
-  console.error("Fuzzy search results:", results)
-  return results.reduce((acc, res) => {
-    acc.push(res.obj.key)
-    return acc
-  }, [] as Array<GlobalAPIName>)
-}
 
 class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
   "@app/GlobalAPIListProvider",
@@ -90,6 +69,89 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
           Resource.get(cachedGlobalsByGameVersion).pipe(
             Effect.map((globals) => globals[gameVersion])
           )
+      }
+    })
+  }
+) {}
+
+class GlobalAPISearchProvider extends Effect.Service<GlobalAPISearchProvider>()(
+  "@app/GlobalAPISearchProvider",
+  {
+    effect: Effect.gen(function*() {
+      const globalList = yield* GlobalAPIListProvider
+      const findSimilarGlobals = (
+        query: string,
+        targets: Array<{
+          key: GlobalAPIName
+          target: string
+        }>
+      ) => {
+        const results = fuzzysort.go(query, targets, {
+          threshold: 0.1,
+          limit: 100,
+          key: "target"
+        })
+        console.error("query:", query)
+        console.error("Fuzzy search results:", results)
+        return results.reduce((acc, res) => {
+          acc.push(res.obj.key)
+          return acc
+        }, [] as Array<GlobalAPIName>)
+      }
+      // Todo: move away from string manipulation and use a different text matching library
+      // required because fuzzysort is unreliable with CamelCase similarity rankings.
+      const wordifyAPI = (name: string) => {
+        const [namespace, apiName] = name.split(".", 2)
+        const toWords = (string: string) =>
+          string
+            .replace(/([A-Z]+)/g, " $1") // Add space before capital letters (ignore CAPS sequences)
+            .replace(/[._]/g, " ") // Replace dots/underscores with spaces
+            .replace(/\s+/g, " ") // Replace multiple spaces with a single space
+            .trim().toLowerCase()
+        if (!apiName) {
+          return toWords(namespace)
+        } else {
+          return namespace.concat(" ", toWords(apiName))
+        }
+      }
+      const cachedWordify = yield* Effect.cachedFunction((name: string) => Effect.succeed(wordifyAPI(name)))
+      const generateSearchObject = yield* Effect.cachedFunction((name: GlobalAPIName) =>
+        Effect.succeed({
+          key: name,
+          target: wordifyAPI(name)
+        })
+      )
+      return {
+        searchApiNames: Effect.fn(function*(query: string, gameVersion?: SupportedGameFlavor) {
+          const availableGlobals = yield* globalList.get(gameVersion)
+          // Split query into multiple queries if separated by whitespace, |, or -
+          // Note: alot of LLM's seem to think the tool should accept multiple queries at once in a single query. stupid llms.
+          const queries = query.split(/[\s|-]+/).filter((q) => q.trim().length > 0)
+          // Process each query and collect results
+          const queryResults: Array<Array<GlobalAPIName>> = []
+          const searchObjects = yield* Effect.forEach(availableGlobals, generateSearchObject)
+          for (const singleQuery of queries) {
+            const results = findSimilarGlobals(
+              yield* cachedWordify(singleQuery),
+              searchObjects
+            )
+            queryResults.push(results)
+          }
+          // Round-robin interleave results from each query
+          const finalResults: Array<GlobalAPIName> = []
+          const seenResults = new Set<GlobalAPIName>()
+          const maxLength = Math.max(...queryResults.map((results) => results.length))
+          for (let i = 0; i < maxLength; i++) {
+            for (const results of queryResults) {
+              if (i < results.length && !seenResults.has(results[i])) {
+                finalResults.push(results[i])
+                seenResults.add(results[i])
+              }
+            }
+          }
+          // Only return top 100 to not pollute model's context
+          return finalResults.slice(0, 100) as ReadonlyArray<GlobalAPIName>
+        })
       }
     })
   }
@@ -163,7 +225,8 @@ const ApiListMcpResource = McpServer
 const find_global_apis = "find_global_apis"
 const get_global_wiki_info = "get_global_api_wiki_info"
 const list_valid_global_apis = "list_valid_global_apis"
-const Toolkit = AiToolkit.make(
+
+const ToolkitSchema = AiToolkit.make(
   AiTool.make(list_valid_global_apis, {
     description: `Lists all global APIs for the specified game version.`,
     parameters: {
@@ -217,70 +280,17 @@ const Toolkit = AiToolkit.make(
     })
   })
 )
-const ToolKitLayer = Toolkit.toLayer(
+const ToolKitLayer = ToolkitSchema.toLayer(
   Effect.gen(function*() {
     const wikiService = yield* WarcraftWikiGGProvider
     const globalList = yield* GlobalAPIListProvider
-    // Todo: move away from string manipulation and use a different text matching library
-    // required because fuzzysort is unreliable with CamelCase similarity rankings.
-    const wordifyAPI = (name: string) => {
-      const [namespace, apiName] = name.split(".", 2)
-      const toWords = (string: string) =>
-        string
-          .replace(/([A-Z]+)/g, " $1") // Add space before capital letters (ignore CAPS sequences)
-          .replace(/[._]/g, " ") // Replace dots/underscores with spaces
-          .replace(/\s+/g, " ") // Replace multiple spaces with a single space
-          .trim().toLowerCase()
-      if (!apiName) {
-        return toWords(namespace)
-      } else {
-        return namespace.concat(" ", toWords(apiName))
-      }
-    }
-    const cachedWordify = yield* Effect.cachedFunction((name: string) => Effect.succeed(wordifyAPI(name)))
-    const generateGlobalSearchObject = yield* Effect.cachedFunction((name: GlobalAPIName) =>
-      Effect.succeed({
-        key: name,
-        target: wordifyAPI(name)
-      })
-    )
+    const searchService = yield* GlobalAPISearchProvider
     return {
       [list_valid_global_apis]: Effect.fn(function*({ gameVersion }) {
         return yield* globalList.get(gameVersion).pipe(Effect.orDie)
       }),
       [find_global_apis]: Effect.fn(function*({ query, gameVersion }) {
-        const availableGlobals = yield* globalList.get(gameVersion).pipe(Effect.orDie)
-        // Split query into multiple queries if separated by whitespace, |, or -
-        // Note: alot of LLM's seem to think that the tool should accept multiple queries at once in a single query param.
-        // stupid llms.
-        const queries = query.split(/[\s|-]+/).filter((q) => q.trim().length > 0)
-
-        const searchObjects = yield* Effect.forEach(
-          availableGlobals,
-          generateGlobalSearchObject
-        )
-        // Process each query and collect results
-        const queryResults: Array<Array<GlobalAPIName>> = []
-        for (const singleQuery of queries) {
-          const results = findSimilarGlobals(
-            yield* cachedWordify(singleQuery),
-            searchObjects
-          )
-          queryResults.push(results)
-        }
-        // Round-robin interleave results from each query
-        const finalResults: Array<GlobalAPIName> = []
-        const seenResults = new Set<GlobalAPIName>()
-        const maxLength = Math.max(...queryResults.map((results) => results.length))
-        for (let i = 0; i < maxLength; i++) {
-          for (const results of queryResults) {
-            if (i < results.length && !seenResults.has(results[i])) {
-              finalResults.push(results[i])
-              seenResults.add(results[i])
-            }
-          }
-        }
-        return finalResults.slice(0, 100) as ReadonlyArray<GlobalAPIName>
+        return yield* searchService.searchApiNames(query, gameVersion).pipe(Effect.orDie)
       }),
       [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
         const apiPageSlug = `API_${apiName}`
@@ -294,11 +304,14 @@ const ToolKitLayer = Toolkit.toLayer(
 ).pipe(
   Layer.provideMerge(ApiListMcpResource),
   Layer.provideMerge(
-    Layer.mergeAll(GlobalAPIListProvider.Default, WarcraftWikiGGProvider.Default)
+    Layer.mergeAll(
+      Layer.provideMerge(GlobalAPISearchProvider.Default, GlobalAPIListProvider.Default),
+      WarcraftWikiGGProvider.Default
+    )
   ),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
-export const GlobalAPIToolKit = McpServer.toolkit(Toolkit).pipe(
+export const GlobalAPIToolKit = McpServer.toolkit(ToolkitSchema).pipe(
   Layer.provide(ToolKitLayer)
 )
