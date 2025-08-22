@@ -70,7 +70,8 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
             Effect.map((globals) => globals[gameVersion])
           )
       }
-    })
+    }),
+    dependencies: [NodeHttpClient.layerUndici]
   }
 ) {}
 
@@ -153,7 +154,8 @@ class GlobalAPISearchProvider extends Effect.Service<GlobalAPISearchProvider>()(
           return finalResults.slice(0, 100) as ReadonlyArray<GlobalAPIName>
         })
       }
-    })
+    }),
+    dependencies: [GlobalAPIListProvider.Default, NodeHttpClient.layerUndici]
   }
 ) {}
 
@@ -199,9 +201,11 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
         return yield* pageContentCache.get(`pages=${encodeURIComponent(page)}&curonly=${curonly ? 1 : 0}`)
       })
     }
-  })
+  }),
+  dependencies: [NodeHttpClient.layerUndici]
 }) {}
 
+// Resources
 const gameVersionParam = McpSchema.param("gameVersion", Schema.Literal(...SupportedGameFlavors))
 const ApiListMcpResource = McpServer
   .resource`resource://lua_global_apis/valid_api_names?gameVersion=${gameVersionParam}`({
@@ -220,12 +224,12 @@ const ApiListMcpResource = McpServer
         const apiGlobals = yield* globalList.get(gameVersion).pipe(Effect.orDie)
         return JSON.stringify(apiGlobals, null, 2)
       })
-  })
+  }).pipe(Layer.provide(GlobalAPIListProvider.Default))
 
+// Tools
 const find_global_apis = "find_global_apis"
 const get_global_wiki_info = "get_global_api_wiki_info"
 const list_valid_global_apis = "list_valid_global_apis"
-
 const ToolkitSchema = AiToolkit.make(
   AiTool.make(list_valid_global_apis, {
     description: `Lists all global APIs for the specified game version.`,
@@ -293,23 +297,23 @@ const ToolKitLayer = ToolkitSchema.toLayer(
         return yield* searchService.searchApiNames(query, gameVersion).pipe(Effect.orDie)
       }),
       [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
-        const apiPageSlug = `API_${apiName}`
+        const [apiPageSlug, currentRevisionOnly] = [`API_${apiName}`, !includeHistory]
         return {
           url: yield* wikiService.getWikiPageLink(apiPageSlug),
-          pageContent: yield* wikiService.getWikiPageContent(apiPageSlug, !includeHistory).pipe(Effect.orDie)
+          pageContent: yield* wikiService.getWikiPageContent(apiPageSlug, currentRevisionOnly).pipe(Effect.orDie)
         }
       })
     }
   })
 ).pipe(
-  Layer.provideMerge(ApiListMcpResource),
-  Layer.provideMerge(
+  Layer.provide(
     Layer.mergeAll(
-      Layer.provideMerge(GlobalAPISearchProvider.Default, GlobalAPIListProvider.Default),
+      GlobalAPISearchProvider.Default,
+      GlobalAPIListProvider.Default,
       WarcraftWikiGGProvider.Default
     )
   ),
-  Layer.provide(NodeHttpClient.layerUndici)
+  Layer.merge(ApiListMcpResource)
 )
 
 export const GlobalAPIToolKit = McpServer.toolkit(ToolkitSchema).pipe(
