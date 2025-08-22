@@ -23,6 +23,7 @@ import { SupportedGameFlavors } from "./GlobalStrings.js"
 //   }
 // }
 const HTTP_REQUEST_TIMEOUT_DURATION = Duration.seconds(15)
+const WIKI_PAGE_CACHE_DURATION = Duration.hours(1)
 type GlobalAPIName = string
 const findSimilarGlobals = (
   query: string,
@@ -93,6 +94,51 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
     })
   }
 ) {}
+
+class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("WarcraftWikiGGProvider", {
+  effect: Effect.gen(function*() {
+    const httpClient = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.filterStatusOk,
+      HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
+    )
+    const pageContentCache = yield* Cache.make({
+      capacity: 3000, // Generous capacity
+      timeToLive: WIKI_PAGE_CACHE_DURATION,
+      lookup: Effect.fn(function*(requestBody: string) {
+        const url = `https://warcraft.wiki.gg/wiki/Special:Export`
+        const response = yield* httpClient.post(url, {
+          // Adding content type in the headers doesnt work, have to add it in the body
+          body: HttpBody.text(
+            requestBody,
+            "application/x-www-form-urlencoded"
+          ),
+          headers: {
+            "User-Agent": "wow-dev-mcp/v0"
+            // "Content-Type": "application/x-www-form-urlencoded",
+          }
+        }).pipe(Effect.timeout(Duration.seconds(12)))
+
+        return yield* pipe(
+          HttpClientResponse.filterStatusOk(response),
+          Effect.flatMap((r) => r.text),
+          // Note: For now just extract the <page> content since the rest is mostly extraneous
+          Effect.map((text) => {
+            const match = text.match(/(<page>.*<\/page>)/s)
+            return match?.[1]
+          })
+        )
+      })
+    })
+    return {
+      getWikiPageLink: (page: string) => Effect.succeed(`https://warcraft.wiki.gg/wiki/${page}`),
+      /** @param page */
+      /** @param curonly if true, only include the current/latest revision of the wiki entry */
+      getWikiPageContent: Effect.fn(function*(page: string, curonly: boolean | undefined) {
+        return yield* pageContentCache.get(`pages=${encodeURIComponent(page)}&curonly=${curonly ? 1 : 0}`)
+      })
+    }
+  })
+}) {}
 
 const gameVersionParam = McpSchema.param("gameVersion", Schema.Literal(...SupportedGameFlavors))
 const ApiListMcpResource = McpServer
@@ -173,10 +219,7 @@ const Toolkit = AiToolkit.make(
 )
 const ToolKitLayer = Toolkit.toLayer(
   Effect.gen(function*() {
-    const httpClient = (yield* HttpClient.HttpClient).pipe(
-      HttpClient.filterStatusOk,
-      HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
-    )
+    const wikiService = yield* WarcraftWikiGGProvider
     const globalList = yield* GlobalAPIListProvider
     // Todo: move away from string manipulation and use a different text matching library
     // required because fuzzysort is unreliable with CamelCase similarity rankings.
@@ -201,39 +244,6 @@ const ToolKitLayer = Toolkit.toLayer(
         target: wordifyAPI(name)
       })
     )
-    /** @param curonly if true, only include the current/latest revision of the wiki entry */
-    const getPageXMLContent = (pages: string, curonly: boolean = true) =>
-      wikiPageCache.get(`pages=${encodeURIComponent(pages)}&curonly=${curonly ? 1 : 0}`)
-
-    // Cache page XML content requests by body a decent TTL
-    const wikiPageCache = yield* Cache.make({
-      capacity: 5000, // Generous capacity
-      timeToLive: Duration.hours(.5),
-      lookup: Effect.fn(function*(requestBody: string) {
-        const url = `https://warcraft.wiki.gg/wiki/Special:Export`
-        const response = yield* httpClient.post(url, {
-          // Adding content type in the headers doesnt work, have to add it in the body
-          body: HttpBody.text(
-            requestBody,
-            "application/x-www-form-urlencoded"
-          ),
-          headers: {
-            "User-Agent": "wow-dev-mcp/v0"
-            // "Content-Type": "application/x-www-form-urlencoded",
-          }
-        }).pipe(Effect.timeout(Duration.seconds(12)))
-
-        return yield* pipe(
-          HttpClientResponse.filterStatusOk(response),
-          Effect.flatMap((r) => r.text),
-          Effect.map((text) => {
-            const match = text.match(/(<page>.*<\/page>)/s)
-            return match?.[1]
-          })
-        )
-      })
-    })
-
     return {
       [list_valid_global_apis]: Effect.fn(function*({ gameVersion }) {
         return yield* globalList.get(gameVersion).pipe(Effect.orDie)
@@ -273,20 +283,19 @@ const ToolKitLayer = Toolkit.toLayer(
         return finalResults.slice(0, 100) as ReadonlyArray<GlobalAPIName>
       }),
       [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
-        const url = `https://warcraft.wiki.gg/wiki/API_${apiName}`
-        yield* Effect.log("Fetching wiki page for:", apiName)
+        const apiPageSlug = `API_${apiName}`
         return {
-          url,
-          pageContent: yield* getPageXMLContent(`API_${apiName}`, !includeHistory).pipe(
-            Effect.orDie
-          )
+          url: yield* wikiService.getWikiPageLink(apiPageSlug),
+          pageContent: yield* wikiService.getWikiPageContent(apiPageSlug, !includeHistory).pipe(Effect.orDie)
         }
       })
     }
   })
 ).pipe(
   Layer.provideMerge(ApiListMcpResource),
-  Layer.provideMerge(GlobalAPIListProvider.Default),
+  Layer.provideMerge(
+    Layer.mergeAll(GlobalAPIListProvider.Default, WarcraftWikiGGProvider.Default)
+  ),
   Layer.provide(NodeHttpClient.layerUndici)
 )
 
