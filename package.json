@@ -1,7 +1,7 @@
 {
   "name": "wow-dev-mcp",
   "author": "juemrami",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
   "license": "MIT",
