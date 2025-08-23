@@ -2,24 +2,11 @@ import { AiTool, AiToolkit, McpSchema, McpServer } from "@effect/ai"
 import { HttpBody, HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
 import { Cache, Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
+import { isNotUndefined } from "effect/Predicate"
 import fuzzysort from "fuzzysort"
 import type { SupportedGameFlavor } from "./GlobalStrings.js"
 import { SupportedGameFlavors } from "./GlobalStrings.js"
 
-// // find linked api pages in a api description xml response
-// const findLinkedPages = (response: string) => {
-//   const templatesTemplate = /{{(.*?)}}/g
-//   for (const match of response.matchAll(templatesTemplate)) {
-//     const templateContent = match[1]
-//     const isAPITemplate = templateContent.startsWith("api|")
-//     const infoMatch = templateContent.match(infoFromTemplate)
-//     if (infoMatch) {
-//       const apiName = infoMatch[1]
-//       const apiType = infoMatch[2] || "a"
-//       // Do something with apiName and apiType
-//     }
-//   }
-// }
 const HTTP_REQUEST_TIMEOUT_DURATION = Duration.seconds(15)
 const WIKI_PAGE_CACHE_DURATION = Duration.hours(1)
 type GlobalAPIName = string
@@ -250,6 +237,27 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
       /** @param curonly if true, only include the current/latest revision of the wiki entry */
       getWikiPageContent: Effect.fn(function*(page: string, curonly: boolean | undefined) {
         return yield* pageContentCache.get(`pages=${encodeURIComponent(page)}&curonly=${curonly ? 1 : 0}`)
+      }),
+      getLinkedWikiPages: Effect.fn(function*(page: string, curonly: boolean | undefined) {
+        const content = yield* pageContentCache.get(`pages=${encodeURIComponent(page)}&curonly=${curonly ? 1 : 0}`)
+        if (!content) return []
+        // https://www.mediawiki.org/wiki/Help:Links#Internal_links
+        const rawInternalLinks = Array.from(content.matchAll(/\[\[(.*?)\]\]/g), (m) => m[1])
+        return yield* Effect.forEach(rawInternalLinks, (link) => {
+          const linkParts = link.split("|")
+          // ignore links with more than 2 parts
+          if (linkParts.length > 2) return Effect.succeed(undefined)
+          let [linkTarget, displayText] = linkParts
+          displayText = displayText?.trim()
+          linkTarget = linkTarget.trim()
+            .replace(/^:/, "") // remove leading colon if present
+            .replace(/^\//, `${page}/`) // handle subpage links
+            .replace(/^\.{2}/, `${page.split("/")[0]}/`) // handle `..` subpage navigations
+            .replace(/\s/g, "_") // replace spaces with underscores
+          return Effect.succeed({ page: linkTarget, title: displayText })
+        }).pipe(
+          Effect.map((links) => links.filter(isNotUndefined))
+        )
       })
     }
   }),
@@ -281,6 +289,27 @@ const ApiListMcpResource = McpServer
 const find_global_apis = "find_global_apis"
 const get_global_wiki_info = "get_global_api_wiki_info"
 const list_valid_global_apis = "list_valid_global_apis"
+const get_warcraft_wiki_page_data = "get_warcraft_wiki_page_data"
+
+const WikiPageData = Schema.Struct({
+  url: Schema.String.annotations({
+    description: "The URL of the wiki.gg page for the global API."
+  }),
+  pageContent: Schema.UndefinedOr(Schema.String).annotations({
+    description: "The MediaWiki XML <page> export of the global API (if the page has any content)."
+  }),
+  linkedPages: Schema.Array(Schema.Struct({
+    page: Schema.String.annotations({
+      description: "The url page slug for the the linked wiki page"
+    }),
+    title: Schema.UndefinedOr(Schema.String).annotations({
+      description: "The displayed text from the source link."
+    })
+  })).annotations({
+    description: "A list of all internally linked wiki page slugs in a given page."
+  })
+})
+
 const ToolkitSchema = AiToolkit.make(
   AiTool.make(list_valid_global_apis, {
     description: `Lists all global APIs for the specified game version.`,
@@ -313,7 +342,9 @@ const ToolkitSchema = AiToolkit.make(
     })
   }),
   AiTool.make(get_global_wiki_info, {
-    description: `Fetches the wiki.gg page for a global API name.`,
+    description: `Fetches the wiki.gg page for a given global API name.
+      This is only useful for api global's who's documented pages would begin with \`API_\`.
+      For resources where the \`page\` slug is already known use the \`${get_warcraft_wiki_page_data}\` tool.`,
     parameters: {
       apiName: Schema.String.annotations({
         description: "The name of the global API to fetch the wiki page for."
@@ -324,15 +355,21 @@ const ToolkitSchema = AiToolkit.make(
         default: false
       })
     },
-    success: Schema.Struct({
-      url: Schema.String.annotations({
-        description: "The URL of the wiki.gg page for the global API."
+    success: WikiPageData
+  }),
+  AiTool.make(get_warcraft_wiki_page_data, {
+    description: `Fetches the wiki.gg page for a Warcraft wiki page.`,
+    parameters: {
+      page: Schema.String.annotations({
+        description: "The name of the Warcraft wiki page to fetch."
       }),
-      pageContent: Schema.UndefinedOr(Schema.String).annotations({
-        description: "The MediaWiki XML <page> export of the global API (if the page has any content)."
+      includeHistory: Schema.UndefinedOr(Schema.Boolean).annotations({
+        description:
+          "Tool calls should omit this unless specified by user. If true, includes the full history revisions for the wiki page.",
+        default: false
       })
-      // links
-    })
+    },
+    success: WikiPageData
   })
 )
 const ToolKitLayer = ToolkitSchema.toLayer(
@@ -351,7 +388,16 @@ const ToolKitLayer = ToolkitSchema.toLayer(
         const [apiPageSlug, currentRevisionOnly] = [`API_${apiName}`, !includeHistory]
         return {
           url: yield* wikiService.getWikiPageLink(apiPageSlug),
-          pageContent: yield* wikiService.getWikiPageContent(apiPageSlug, currentRevisionOnly).pipe(Effect.orDie)
+          pageContent: yield* wikiService.getWikiPageContent(apiPageSlug, currentRevisionOnly).pipe(Effect.orDie),
+          linkedPages: yield* wikiService.getLinkedWikiPages(apiPageSlug, currentRevisionOnly).pipe(Effect.orDie)
+        }
+      }),
+      [get_warcraft_wiki_page_data]: Effect.fn(function*({ page, includeHistory }) {
+        const currentRevisionOnly = !includeHistory
+        return {
+          url: yield* wikiService.getWikiPageLink(page),
+          pageContent: yield* wikiService.getWikiPageContent(page, currentRevisionOnly).pipe(Effect.orDie),
+          linkedPages: yield* wikiService.getLinkedWikiPages(page, currentRevisionOnly).pipe(Effect.orDie)
         }
       })
     }
