@@ -1,5 +1,6 @@
 {
   "name": "wow-dev-mcp",
+  "author": "juemrami",
   "version": "0.0.0",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
@@ -9,11 +10,23 @@
     "type": "git",
     "url": "https://github.com/juemrami/wow-dev-mcp"
   },
+  "bin": {
+    "wow-dev-mcp": "./dist/main.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist", "src", "README.md", "LICENSE"
+  ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsx ./ci/bundle-package-json.ts",
     "watch": "tsx --watch src/main.ts",
     "lint": "eslint \"**/{src,test}/**/*.{ts,mjs}\"",
-    "lint-fix": "pnpm lint --fix"
+    "lint-fix": "pnpm lint --fix",
+    "docker-build": "docker build -f ./ci/dockerfile -t juemrami/wow-dev-mcp .",
+    "docker-publish": "pnpm docker-build && docker push juemrami/wow-dev-mcp:latest",
+    "prepublishOnly": "pnpm build"
   },
   "devDependencies": {
     "@effect/ai": "^0.26.0",
