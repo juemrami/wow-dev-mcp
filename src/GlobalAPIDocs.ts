@@ -4,8 +4,10 @@ import { NodeHttpClient } from "@effect/platform-node"
 import { Cache, Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
 import { isNotUndefined } from "effect/Predicate"
 import fuzzysort from "fuzzysort"
-import type { SupportedGameFlavor } from "./GlobalStrings.js"
-import { SupportedGameFlavors } from "./GlobalStrings.js"
+import type { SupportedClientVersion } from "./GlobalStrings.js"
+import { ClientVersionParam, SupportedClientVersions } from "./GlobalStrings.js"
+
+const TOOL_DEFAULT_GAME_VERSION: SupportedClientVersion = "mainline"
 
 const HTTP_REQUEST_TIMEOUT_DURATION = Duration.seconds(15)
 const WIKI_PAGE_CACHE_DURATION = Duration.hours(1)
@@ -19,10 +21,10 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
         HttpClient.filterStatusOk,
         HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
       )
-      const getGlobalAPIFileUrl = (flavor: SupportedGameFlavor) =>
-        `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${flavor}/Resources/GlobalAPI.lua`
+      const getGlobalAPIFileUrl = (version: SupportedClientVersion) =>
+        `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${version}/Resources/GlobalAPI.lua`
 
-      const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedGameFlavor) {
+      const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedClientVersion) {
         const text = yield* pipe(
           httpClient.get(getGlobalAPIFileUrl(version)),
           Effect.timeout(HTTP_REQUEST_TIMEOUT_DURATION),
@@ -43,8 +45,8 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
 
       const cachedGlobalsByGameVersion = yield* Resource.auto(
         Effect.gen(function*() {
-          const apiGlobals = {} as Record<SupportedGameFlavor, Array<GlobalAPIName>>
-          for (const gameVersion of SupportedGameFlavors) {
+          const apiGlobals = {} as Record<SupportedClientVersion, Array<GlobalAPIName>>
+          for (const gameVersion of SupportedClientVersions) {
             apiGlobals[gameVersion] = yield* fetchAndParseApiGlobalsByGameVersion(gameVersion)
           }
           return yield* Effect.succeed(apiGlobals)
@@ -52,9 +54,9 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
         Schedule.spaced(Duration.hours(1))
       )
       return {
-        get: (gameVersion: SupportedGameFlavor = "mainline") =>
+        get: (version: SupportedClientVersion = TOOL_DEFAULT_GAME_VERSION) =>
           Resource.get(cachedGlobalsByGameVersion).pipe(
-            Effect.map((globals) => globals[gameVersion])
+            Effect.map((globals) => globals[version])
           )
       }
     }),
@@ -110,7 +112,7 @@ class GlobalAPISearchProvider extends Effect.Service<GlobalAPISearchProvider>()(
         })
       )
       return {
-        searchApiNames: Effect.fn(function*(query: string, gameVersion?: SupportedGameFlavor) {
+        searchApiNames: Effect.fn(function*(query: string, gameVersion?: SupportedClientVersion) {
           const availableGlobals = yield* globalList.get(gameVersion)
           // Split query into multiple queries if separated by whitespace, |, or -
           // Note: alot of LLM's seem to think the tool should accept multiple queries at once in a single query. stupid llms.
@@ -265,30 +267,30 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
 }) {}
 
 // Resources
-const gameVersionParam = McpSchema.param("gameVersion", Schema.Literal(...SupportedGameFlavors))
+const clientVersionParam = McpSchema.param("clientVersion", Schema.Literal(...SupportedClientVersions))
 const ApiListMcpResource = McpServer
-  .resource`resource://lua_global_apis/valid_api_names?gameVersion=${gameVersionParam}`({
+  .resource`resource://lua_global_apis/valid_api_names?clientVersion=${clientVersionParam}`({
     name: "Valid global API names by game version",
     mimeType: "application/json",
     description:
-      `A dynamic resource that lists all valid global API names for a given game version. The game version can be one of [${
-        SupportedGameFlavors.join(", ")
-      }]. Intended for human browsing or bulk reasoning, not per-query (use the tool for that)`,
+      `A dynamic resource that lists all valid global API names, for a given game client version -- one of [${
+        SupportedClientVersions.join(", ")
+      }]. Intended for human browsing or bulk reasoning, not per-query (use the tool for that).`,
     completion: {
-      gameVersion: () => Effect.succeed([...SupportedGameFlavors])
+      clientVersion: () => Effect.succeed([...SupportedClientVersions])
     },
-    content: (_, gameVersion) =>
+    content: (_, clientVersion) =>
       Effect.gen(function*() {
         const globalList = yield* GlobalAPIListProvider
-        const apiGlobals = yield* globalList.get(gameVersion).pipe(Effect.orDie)
+        const apiGlobals = yield* globalList.get(clientVersion).pipe(Effect.orDie)
         return JSON.stringify(apiGlobals, null, 2)
       })
   }).pipe(Layer.provide(GlobalAPIListProvider.Default))
 
 // Tools
-const find_global_apis = "find_global_apis"
-const get_global_wiki_info = "get_global_api_wiki_info"
-const list_valid_global_apis = "list_valid_global_apis"
+const find_global_apis = "search_wow_global_api_names"
+const list_valid_global_apis = "list_wow_global_api_names"
+const get_global_wiki_info = "get_warcraft_wiki_global_api_info"
 const get_warcraft_wiki_page_data = "get_warcraft_wiki_page_data"
 
 const WikiPageData = Schema.Struct({
@@ -312,37 +314,34 @@ const WikiPageData = Schema.Struct({
 
 const ToolkitSchema = AiToolkit.make(
   AiTool.make(list_valid_global_apis, {
-    description: `Lists all global APIs for the specified game version.`,
+    description: "Lists all global API names for the specified game client version.\
+    \n\t`clientVersion`: One of [{{flavors}}], default=\"{{default}}\"\
+    ".replace("{{flavors}}", SupportedClientVersions.join(", ")).replace("{{default}}", TOOL_DEFAULT_GAME_VERSION),
     parameters: {
-      gameVersion: Schema.Literal(...SupportedGameFlavors).annotations({
-        description: `The game version to filter the search by. One of [${SupportedGameFlavors.join(", ")}]`,
-        default: "mainline"
-      })
+      clientVersion: ClientVersionParam.annotations({ default: TOOL_DEFAULT_GAME_VERSION })
     },
     success: Schema.Array(Schema.String).annotations({
-      description: "The list of all valid global API names for a given live game version client"
+      description: "The list of all valid global API names for a given live game client version"
     })
   }),
   AiTool.make(find_global_apis, {
-    description: `Searches for any global APIs similar to a given api name(s). Can optionally provide a game version.\n
+    description:
+      `Searches for any global APIs similar to a given api name(s). Can optionally provide a game client version.\n
     \`query\`: should be a string the global API variable names to search for.\n
-    \`gameVersion\`: optional. should be one of [${SupportedGameFlavors.join(", ")}].
+    \`clientVersion\`: optional. should be one of [${SupportedClientVersions.join(", ")}].
     `,
     parameters: {
       query: Schema.String.annotations({
         description: "The API call, or similar, to search for. eg \"IsQuestComplete\""
       }),
-      gameVersion: Schema.UndefinedOr(Schema.Literal(...SupportedGameFlavors)).annotations({
-        description: `The game version to filter the search by. One of [${SupportedGameFlavors.join(", ")}]`,
-        default: "mainline"
-      })
+      clientVersion: Schema.UndefinedOr(ClientVersionParam).annotations({ default: TOOL_DEFAULT_GAME_VERSION })
     },
     success: Schema.Array(Schema.String).annotations({
       description: "The list of nearest global API names found."
     })
   }),
   AiTool.make(get_global_wiki_info, {
-    description: `Fetches the wiki.gg page for a given global API name.
+    description: `Fetches the warcraft.wiki.gg page for a given global API name.
       This is only useful for api global's who's documented pages would begin with \`API_\`.
       For resources where the \`page\` slug is already known use the \`${get_warcraft_wiki_page_data}\` tool.`,
     parameters: {
@@ -358,10 +357,12 @@ const ToolkitSchema = AiToolkit.make(
     success: WikiPageData
   }),
   AiTool.make(get_warcraft_wiki_page_data, {
-    description: `Fetches the wiki.gg page for a Warcraft wiki page.`,
+    description: "Fetches the warcraft.wiki.gg page for a given wiki page slug.\
+    \nPrefer using this tool when getting wiki content for pages that are not global APIs.\
+    \nFor known global APIs use the `%s` tool.".replace("%s", get_global_wiki_info),
     parameters: {
       page: Schema.String.annotations({
-        description: "The name of the Warcraft wiki page to fetch."
+        description: "The name of the Warcraft wiki page to fetch. aka the page slug."
       }),
       includeHistory: Schema.UndefinedOr(Schema.Boolean).annotations({
         description:
@@ -378,11 +379,11 @@ const ToolKitLayer = ToolkitSchema.toLayer(
     const globalList = yield* GlobalAPIListProvider
     const searchService = yield* GlobalAPISearchProvider
     return {
-      [list_valid_global_apis]: Effect.fn(function*({ gameVersion }) {
-        return yield* globalList.get(gameVersion).pipe(Effect.orDie)
+      [list_valid_global_apis]: Effect.fn(function*({ clientVersion }) {
+        return yield* globalList.get(clientVersion).pipe(Effect.orDie)
       }),
-      [find_global_apis]: Effect.fn(function*({ query, gameVersion }) {
-        return yield* searchService.searchApiNames(query, gameVersion).pipe(Effect.orDie)
+      [find_global_apis]: Effect.fn(function*({ query, clientVersion }) {
+        return yield* searchService.searchApiNames(query, clientVersion).pipe(Effect.orDie)
       }),
       [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
         const [apiPageSlug, currentRevisionOnly] = [`API_${apiName}`, !includeHistory]
