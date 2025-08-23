@@ -34,6 +34,12 @@ const SupportedClientLocales = [
   "zhTW"
 ] as const
 type SupportedClientLocale = typeof SupportedClientLocales[number]
+const ClientLocaleParam = Schema.Literal(...SupportedClientLocales).annotations({
+  description: "Locale code for the supported game client localization. One of [{{locales}}]".replace(
+    "{{locales}}",
+    SupportedClientLocales.join(", ")
+  )
+})
 
 const getGlobalStringFileUrl = (flavor: SupportedClientVersion, lang: SupportedClientLocale) =>
   `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/refs/heads/${flavor}/Resources/GlobalStrings/${lang}.lua`
@@ -69,10 +75,19 @@ const toolkit = AiToolkit.make(
         description: "The query to match against existing global strings. \
           Expected single words or simple phrases eg; `\"Missing Item\"`, `\"Not enough currency.\"`"
       }),
+      locale: Schema.UndefinedOr(ClientLocaleParam).annotations({
+        description: "The game client locale to search within. Deduce from user query language. Can omit for english.",
+        default: DEFAULT_WOW_LOCALE
+      }),
+      clientVersion: Schema.UndefinedOr(ClientVersionParam).annotations({
+        description: "The game client version to search within. Can omit for latest or unspecified.",
+        default: TOOL_DEFAULT_CLIENT_VERSION
+      }),
       threshold: Schema.UndefinedOr(
         Schema.Number.pipe(Schema.between(0, 1))
       ).annotations({
-        description: "Threshold to control the strictness of the search. \
+        description:
+          "Threshold to control the strictness of the search. If you are not receiving results, lower this number.\
         \nRecommendations: \
         \n\t* <= 0.8 for any exact matches; \
         \n\t* 0.5 for single word queries; \
@@ -253,8 +268,8 @@ const ToolkitLayer = toolkit
       }
 
       return toolkit.of({
-        [search_global_strings]: Effect.fn(function*({ query, threshold, limit }) {
-          const results = yield* Effect.orDie(search(query, threshold, limit))
+        [search_global_strings]: Effect.fn(function*({ query, threshold, limit, locale, clientVersion }) {
+          const results = yield* Effect.orDie(search(query, threshold, limit, clientVersion, locale))
           return results.reduce((acc, result) => {
             acc[result.key] = acc[result.key] || {}
             acc[result.key][result.lang] = result.content
