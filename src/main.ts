@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { McpServer } from "@effect/ai"
 import { NodeRuntime, NodeSink, NodeStream } from "@effect/platform-node"
 import { Layer, Logger } from "effect"
@@ -6,7 +7,7 @@ import { GlobalStringsToolkit } from "./GlobalStrings.js"
 
 McpServer.layerStdio({
   name: "wow-dev-mcp",
-  version: "0.0.0",
+  version: "0.0.2",
   stdin: NodeStream.stdin,
   stdout: NodeSink.stdout
 }).pipe(

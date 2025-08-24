@@ -27,6 +27,7 @@
   },
   "include": [
     "src/**/*",
+    "ci/**/*",
     "tsup.config.ts"
   ],
   "exclude": [

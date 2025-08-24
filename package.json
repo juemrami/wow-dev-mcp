@@ -1,7 +1,7 @@
 {
   "name": "wow-dev-mcp",
   "author": "juemrami",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
   "license": "MIT",
@@ -14,15 +14,16 @@
     "wow-dev-mcp": "./dist/main.cjs"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "directory": "dist"
   },
   "files": [
-    "dist", "src", "README.md", "LICENSE"
+    "src", "README.md", "LICENSE"
   ],
   "scripts": {
-    "build": "tsup && tsx ./ci/bundle-package-json.ts",
+    "build": "rm -rf ./dist && tsup && tsx ./ci/bundle-package-json.ts",
     "watch": "tsx --watch src/main.ts",
-    "lint": "eslint \"**/{src,test}/**/*.{ts,mjs}\"",
+    "lint": "eslint \"**/{src,ci,test}/**/*.{ts,mjs}\"",
     "lint-fix": "pnpm lint --fix",
     "docker-build": "docker build -f ./ci/dockerfile -t juemrami/wow-dev-mcp .",
     "docker-publish": "pnpm docker-build && docker push juemrami/wow-dev-mcp:latest",
@@ -46,6 +47,7 @@
     "eslint": "^9.33.0",
     "eslint-import-resolver-typescript": "^3.10.1",
     "eslint-plugin-import": "^2.32.0",
+    "fast-glob": "^3.3.3",
     "fuzzysort": "^3.1.0",
     "tsup": "^8.5.0",
     "tsx": "^4.20.4",
