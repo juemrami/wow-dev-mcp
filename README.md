@@ -20,7 +20,7 @@ A Model Context Protocol (MCP) server for World of Warcraft development tools.
 }
 -->
 <!-- https://cursor.com/install-mcp?name={{name}}&config={{base64encodedjson}} -->
-[![Install to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=wow-dev-mcp&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoiZG9ja2VyIHJ1biAtLXJtIC1pIGp1ZW1yYW1pL3dvdy1kZXYtbWNwIn0%3D)
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=docker-dev-mcp&config=eyJjb21tYW5kIjoiZG9ja2VyIiwiYXJncyI6WyJydW4iLCItLXJtIiwiLWkiLCJqdWVtcmFtaS93b3ctZGV2LW1jcCJdfQ==)
 
 <!-- Vscode deeplink json (to be uri encoded) -->
 <!--
@@ -28,7 +28,7 @@ A Model Context Protocol (MCP) server for World of Warcraft development tools.
     "name": "wow-dev-mcp",
     "gallery": false,
     "command": "docker",
-    "args": ["run", "--rm", "-it", "juemrami/wow-dev-mcp"]
+    "args": ["run", "--rm", "-i", "juemrami/wow-dev-mcp"]
 }
 -->
 <!-- vscode:mcp/install?{{uriencodedjson}} -->
@@ -52,7 +52,7 @@ Available on npm registry and dockerhub via
 npx -y wow-dev-mcp
 ```
 ```bash
-docker run --rm -it juemrami/wow-dev-mcp
+docker run --rm -i juemrami/wow-dev-mcp
 ```
 ## Available Tools
 ### Global Strings Toolkit
