@@ -115,8 +115,10 @@ const toolkit = AiToolkit.make(
     parameters: {
       clientVersion: ClientVersionParam.annotations({ default: TOOL_DEFAULT_CLIENT_VERSION })
     },
-    success: Schema.Array(GlobalStringKey).annotations({
-      description: "Array of global string keys available in the specified game client."
+    success: Schema.Struct({
+      keys: Schema.Array(GlobalStringKey).annotations({
+        description: "Array of global string keys available in the specified game client."
+      })
     })
   }),
   AiTool.make(get_string_translations, {
@@ -280,7 +282,7 @@ const ToolkitLayer = toolkit
           const keys = yield* Resource.get(globalStringsByFlavorMap).pipe(
             Effect.map((globalsByGameVersion) => {
               const x = globalsByGameVersion[clientVersion]
-              return Object.keys(x)
+              return { keys: Object.keys(x) }
             }),
             Effect.orDie
           )

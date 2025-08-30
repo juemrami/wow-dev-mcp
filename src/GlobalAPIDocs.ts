@@ -315,29 +315,33 @@ const WikiPageData = Schema.Struct({
 const ToolkitSchema = AiToolkit.make(
   AiTool.make(list_valid_global_apis, {
     description: "Lists all global API names for the specified game client version.\
-    \n\t`clientVersion`: One of [{{flavors}}], default=\"{{default}}\"\
-    ".replace("{{flavors}}", SupportedClientVersions.join(", ")).replace("{{default}}", TOOL_DEFAULT_GAME_VERSION),
+    \n\t`clientVersion`: One of [{{flavors}}], default=\"{{default}}\""
+      .replace("{{flavors}}", SupportedClientVersions.join(", "))
+      .replace("{{default}}", TOOL_DEFAULT_GAME_VERSION),
     parameters: {
       clientVersion: ClientVersionParam.annotations({ default: TOOL_DEFAULT_GAME_VERSION })
     },
-    success: Schema.Array(Schema.String).annotations({
-      description: "The list of all valid global API names for a given live game client version"
+    success: Schema.Struct({
+      valid: Schema.Array(Schema.String).annotations({
+        description: "The list of all valid global API names for a given live game client version"
+      })
     })
   }),
   AiTool.make(find_global_apis, {
-    description:
-      `Searches for any global APIs similar to a given api name(s). Can optionally provide a game client version.\n
-    \`query\`: should be a string the global API variable names to search for.\n
-    \`clientVersion\`: optional. should be one of [${SupportedClientVersions.join(", ")}].
-    `,
+    description: "Searches for any global APIs similar to a given api name(s).\
+    \n\t`query`: should be a string the global API variable names to search for.\
+    \n\t`clientVersion`: optional. should be one of [{{clients}}]"
+      .replace("{{clients}}", SupportedClientVersions.join(", ")),
     parameters: {
       query: Schema.String.annotations({
         description: "The API call, or similar, to search for. eg \"IsQuestComplete\""
       }),
       clientVersion: Schema.UndefinedOr(ClientVersionParam).annotations({ default: TOOL_DEFAULT_GAME_VERSION })
     },
-    success: Schema.Array(Schema.String).annotations({
-      description: "The list of nearest global API names found."
+    success: Schema.Struct({
+      nearest: Schema.Array(Schema.String).annotations({
+        description: "The list of nearest global API names found."
+      })
     })
   }),
   AiTool.make(get_global_wiki_info, {
@@ -380,10 +384,14 @@ const ToolKitLayer = ToolkitSchema.toLayer(
     const searchService = yield* GlobalAPISearchProvider
     return {
       [list_valid_global_apis]: Effect.fn(function*({ clientVersion }) {
-        return yield* globalList.get(clientVersion).pipe(Effect.orDie)
+        return {
+          valid: yield* globalList.get(clientVersion).pipe(Effect.orDie)
+        }
       }),
       [find_global_apis]: Effect.fn(function*({ query, clientVersion }) {
-        return yield* searchService.searchApiNames(query, clientVersion).pipe(Effect.orDie)
+        return {
+          nearest: yield* searchService.searchApiNames(query, clientVersion).pipe(Effect.orDie)
+        }
       }),
       [get_global_wiki_info]: Effect.fn(function*({ apiName, includeHistory }) {
         const [apiPageSlug, currentRevisionOnly] = [`API_${apiName}`, !includeHistory]
