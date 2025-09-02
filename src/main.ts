@@ -7,7 +7,7 @@ import { GlobalStringsToolkit } from "./GlobalStrings.js"
 
 McpServer.layerStdio({
   name: "wow-dev-mcp",
-  version: "0.0.2",
+  version: __VERSION__,
   stdin: NodeStream.stdin,
   stdout: NodeSink.stdout
 }).pipe(
