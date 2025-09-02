@@ -1,0 +1,59 @@
+name: Snapshot
+
+on:
+  push:
+    branches: [main, next-minor, next-major]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force the snapshot creation'
+        required: false
+        default: 'false'
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  ## This is for codegen, unused rn
+  src-diff:
+    name: Source Change Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Git diff `/src` state
+        id: diff-check
+        run: |
+          git add src
+          if git diff-index --cached HEAD --exit-code src; then
+            echo "No changes detected in /src"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --cached src
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+    outputs:
+      has_changes: ${{ steps.diff-check.outputs.has_changes }}
+  dockerhub:
+    needs: src-diff
+    name: DockerHub Development Snapshot
+    uses: ./.github/workflows/docker.yml
+    if: ${{ needs.src-diff.outputs.has_changes == 'true' || inputs.force == 'true' }}
+    with:
+      image-tag: development
+  pkg-pr:
+    needs: src-diff
+    name: pkg.pr.new Snapshot
+    if: ${{ github.repository_owner == 'juemrami' && (needs.src-diff.outputs.has_changes == 'true' || inputs.force == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Workspace
+        uses: ./.github/actions/setup
+      - name: Check package
+        run: pnpm check
+      - name: Build package
+        run: pnpm build
+      - name: Create snapshot
+        id: snapshot
+        run: pnpx pkg-pr-new@0.0.59 publish --pnpm --comment=off
