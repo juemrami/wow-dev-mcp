@@ -28,7 +28,8 @@
   "include": [
     "src/**/*",
     "ci/**/*",
-    "tsup.config.ts"
+    "tsup.config.ts",
+    "**/*.d.ts"
   ],
   "exclude": [
     "node_modules",

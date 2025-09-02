@@ -18,7 +18,10 @@
     "directory": "dist"
   },
   "files": [
-    "src", "README.md", "LICENSE"
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "rm -rf ./dist && tsup && tsx ./ci/bundle-package-json.ts",
@@ -30,6 +33,7 @@
     "prepublishOnly": "pnpm build"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.6",
     "@effect/ai": "^0.26.0",
     "@effect/eslint-plugin": "^0.3.2",
     "@effect/language-service": "^0.35.2",
@@ -44,6 +48,7 @@
     "@typescript-eslint/eslint-plugin": "^8.40.0",
     "@typescript-eslint/parser": "^8.40.0",
     "effect": "^3.17.7",
+    "esbuild-plugin-replace": "^1.4.0",
     "eslint": "^9.33.0",
     "eslint-import-resolver-typescript": "^3.10.1",
     "eslint-plugin-import": "^2.32.0",
