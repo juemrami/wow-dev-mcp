@@ -28,13 +28,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     outputs:
-      release: ${{ steps.changesets.outputs.release }}
+      published: ${{ steps.changesets.outputs.published }}
   dockerhub:
     needs: changesets
     name: Publish DockerHub Images
     uses: ./.github/workflows/docker.yml
-    if: ${{ needs.changesets.outputs.release == 'true' }}
+    if: ${{ needs.changesets.outputs.published == 'true' }}
+    secrets: inherit
     with:
       image-tags: |
         ${{ vars.DOCKERHUB_IMAGE }}:latest
         ${{ vars.DOCKERHUB_IMAGE }}:development
+        ${{ vars.DOCKERHUB_IMAGE }}:${{ github.ref_name }}

@@ -31,6 +31,6 @@ jobs:
                 file: ./ci/dockerfile
                 push: true
                 tags: ${{ inputs.image-tags }}
-                cache-from: type=registry,ref=${{vars.DOCKERHUB_IMAGE }}:cache
-                cache-to: type=registry,ref=${{vars.DOCKERHUB_IMAGE }}:cache,mode=max
+                cache-from: type=registry,ref=${{ vars.DOCKERHUB_IMAGE }}:cache
+                cache-to: type=registry,ref=${{ vars.DOCKERHUB_IMAGE }}:cache,mode=max
                 platforms: linux/amd64,linux/arm64

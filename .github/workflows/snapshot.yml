@@ -9,6 +9,10 @@ on:
         description: 'Force the snapshot creation'
         required: false
         default: 'false'
+      docker-tag:
+        description: 'Docker tag to apply'
+        required: false
+        default: 'development'
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -37,9 +41,10 @@ jobs:
     needs: src-diff
     name: DockerHub Development Snapshot
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     if: ${{ needs.src-diff.outputs.has_changes == 'true' || inputs.force == 'true' }}
     with:
-      image-tags: ${{ vars.DOCKERHUB_IMAGE }}:development
+      image-tags: "${{ vars.DOCKERHUB_IMAGE }}:${{ inputs.docker-tag }}"
   pkg-pr:
     needs: src-diff
     name: pkg.pr.new Snapshot
