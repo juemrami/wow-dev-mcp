@@ -39,7 +39,7 @@ jobs:
     uses: ./.github/workflows/docker.yml
     if: ${{ needs.src-diff.outputs.has_changes == 'true' || inputs.force == 'true' }}
     with:
-      image-tag: development
+      image-tags: ${{ vars.DOCKERHUB_IMAGE }}:development
   pkg-pr:
     needs: src-diff
     name: pkg.pr.new Snapshot

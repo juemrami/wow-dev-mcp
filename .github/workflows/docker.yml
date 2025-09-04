@@ -2,7 +2,7 @@ name: Build + Release Docker Image
 on:
   workflow_call:
     inputs:
-      image-tag:
+      image-tags:
           required: true
           type: string
 jobs:
@@ -30,7 +30,7 @@ jobs:
                 context: .
                 file: ./ci/dockerfile
                 push: true
-                tags: juemrami/wow-dev-mcp:${{ inputs.image-tag }}
-                cache-from: type=registry,ref=juemrami/wow-dev-mcp:cache
-                cache-to: type=registry,ref=juemrami/wow-dev-mcp:cache,mode=max
+                tags: ${{ inputs.image-tags }}
+                cache-from: type=registry,ref=${{vars.DOCKERHUB_IMAGE }}:cache
+                cache-to: type=registry,ref=${{vars.DOCKERHUB_IMAGE }}:cache,mode=max
                 platforms: linux/amd64,linux/arm64

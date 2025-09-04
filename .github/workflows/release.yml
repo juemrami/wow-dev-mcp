@@ -7,7 +7,8 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  npmjs:
+  changesets:
+    name: "Changesets: Create Release PR || npm.js Publish"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,9 +30,11 @@ jobs:
     outputs:
       release: ${{ steps.changesets.outputs.release }}
   dockerhub:
-    needs: npmjs
-    name: Build and Push Docker Image
+    needs: changesets
+    name: Publish DockerHub Images
     uses: ./.github/workflows/docker.yml
-    if: ${{ needs.npmjs.outputs.release == 'true' }}
+    if: ${{ needs.changesets.outputs.release == 'true' }}
     with:
-      image-tag: latest
+      image-tags: |
+        ${{ vars.DOCKERHUB_IMAGE }}:latest
+        ${{ vars.DOCKERHUB_IMAGE }}:development
