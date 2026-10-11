@@ -83,11 +83,56 @@ Support following WoW game client locales (will vary by client version):
 
 Both toolkits support multiple WoW game client flavors:
 - `mainline` - Current retail version
-- `mists` - Mists of Pandaria Classic
-- `vanilla` - Classic Era WoW (incl. Hardcore/SoD)
+- `classic` - Progression Classic, as of October 2026: Mists of Pandaria
+- `vanilla` - Classic Era (incl. Hardcore/Season of Discovery)
+- `tbc` - Anniversary realms, as of October 2026: The Burning Crusade
+- `forever` - Warcraft Forever
 
-> Note: You may need to specify to the agent to use a specific game flavor
-**todo**: add tool/prompt for scanning `.toc` file to determine best client flavor(s)
+### Selecting a game flavor
+
+Every tool that reads client data takes an optional `clientVersion` parameter.
+It defaults to `mainline`, so retail needs no mention. For any other client the
+agent has to pass the key:
+
+| Tool | Takes `clientVersion` |
+|---|---|
+| `search_wow_global_api_names` | yes |
+| `list_wow_global_api_names` | yes |
+| `search_wow_global_strings` | yes |
+| `list_wow_global_string_keys` | yes |
+| `get_wow_global_string_translations` | yes |
+| `get_warcraft_wiki_global_api_info` | no, the wiki is not versioned |
+| `get_warcraft_wiki_page_data` | no |
+
+The agent decides which key to pass from your prompt, so name the client
+when it is not retail:
+
+- "Search the TBC Anniversary API for arena team functions" → `clientVersion: "tbc"`
+- "Which global strings mention Hardcore on Classic Era?" → `clientVersion: "vanilla"`
+- "List the Classic Forever API names" → `clientVersion: "forever"`
+
+For an addon project, put the flavor in the agent's project instructions once
+(for example `CLAUDE.md`, `.cursorrules` or `copilot-instructions.md`) so every
+call uses it:
+
+    This addon targets Mists of Pandaria Classic. Use clientVersion "classic"
+    for all wow-dev-mcp calls.
+
+If the agent can read the addon's `.toc` file, the `## Interface` number tells
+it the flavor:
+
+| Interface | Flavor |
+|---|---|
+| `12xxxx` | `mainline` |
+| `5xxxx` | `classic` |
+| `2xxxx` | `tbc` |
+| `16xxx` | `forever` |
+| `11xxx` | `vanilla` |
+
+The full API name list is also exposed as an MCP resource per flavor, for
+clients that support resources:
+
+    resource://lua_global_apis/valid_api_names/<flavor>
 
 ### Known Issues
  - you may have to try really hard to get your llm to use optional tool parameters correctly. Depends on model.

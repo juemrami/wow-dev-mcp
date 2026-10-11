@@ -1,7 +1,7 @@
 import { AiTool, AiToolkit, McpServer } from "@effect/ai"
 import { HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
-import { Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
+import { Cache, Duration, Effect, Layer, pipe, Schedule, Schema } from "effect"
 import fuzzysort from "fuzzysort"
 
 const DEFAULT_SEARCH_THRESHOLD = 0.08
@@ -9,14 +9,24 @@ const DEFAULT_WOW_LOCALE = "enUS"
 const FUZZY_SEARCH_KEY = "target"
 const DEFAULT_SEARCH_RESULT_LIMIT = 25
 
-// For now this param can simply map to the available branches in ketho's BlizzardInterfaceResources repo
-export const SupportedClientVersions = ["mainline", "mists", "vanilla"] as const
+// Flavor keys are stable; KethoBranch maps them to the current branch names in
+// https://github.com/Ketho/BlizzardInterfaceResources
+export const SupportedClientVersions = ["mainline", "classic", "vanilla", "tbc", "forever"] as const
 export type SupportedClientVersion = typeof SupportedClientVersions[number]
+export const KethoBranch: Record<SupportedClientVersion, string> = {
+    mainline: "live",
+    classic: "classic",
+    vanilla: "classic_era",
+    tbc: "classic_anniversary",
+    forever: "forever"
+}
 export const ClientVersionParam = Schema.Literal(...SupportedClientVersions).annotations({
   description: "Abstract key for the valid game version to target when querying client specific data. \
   \n\t`mainline`: The main live version of the game, colloquially known as 'retail wow'.\
-  \n\t`vanilla`: The original version of the game, cka 'vanilla wow', 'classic wow', 'classic era'/'era'.\
-  \n\t`mists`: The latest classic expansion, currently 'Mists of Pandaria' aka 'mop'/'mop classic'.\
+  \n\t`vanilla`: The original version of the game, aka 'vanilla wow', 'classic wow', 'classic era'/'era', incl. Hardcore and Season of Discovery.\
+  \n\t`classic`: The progression classic realms, currently 'Mists of Pandaria' aka 'mop'/'mop classic'.\
+  \n\t`tbc`: The Anniversary classic realms, currently 'The Burning Crusade'.\
+  \n\t`forever`: The 1.60 'Classic Forever' client.\
   "
 })
 const TOOL_DEFAULT_CLIENT_VERSION: SupportedClientVersion = "mainline"
@@ -42,7 +52,7 @@ const ClientLocaleParam = Schema.Literal(...SupportedClientLocales).annotations(
 })
 
 const getGlobalStringFileUrl = (flavor: SupportedClientVersion, lang: SupportedClientLocale) =>
-  `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/refs/heads/${flavor}/Resources/GlobalStrings/${lang}.lua`
+  `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/refs/heads/${KethoBranch[flavor]}/Resources/GlobalStrings/${lang}.lua`
 
 const GlobalStringKey = Schema.String.annotations({
   description: "The unique in-game lua environment global variable name for the string"
@@ -146,7 +156,7 @@ const ToolkitLayer = toolkit
     Effect.gen(function*() {
       const docsClient = (yield* HttpClient.HttpClient).pipe(
         HttpClient.filterStatusOk,
-        HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
+          HttpClient.retry(Schedule.spaced(Duration.seconds(3)).pipe(Schedule.intersect(Schedule.recurs(3))))
       )
 
       const loadResourceFileContents = (url: string) =>
@@ -187,27 +197,11 @@ const ToolkitLayer = toolkit
             return acc
           })
         )
-      const globalStringsByFlavorMap = yield* Resource.auto(
-        Effect.gen(function*() {
-          const globalStringsForFlavor = yield* Effect.forEach(
-            SupportedClientVersions,
-            (flavor) =>
-              createTranslationMapForFlavor(flavor).pipe(
-                Effect.map((x) => ({ [flavor]: x }))
-              )
-          ).pipe(Effect.andThen((x) => {
-            const final = {} as Record<SupportedClientVersion, Record<GlobalKey, Record<SupportedClientLocale, string>>>
-            for (const flavorMap of x) {
-              for (const [flavor, map] of Object.entries(flavorMap)) {
-                final[flavor as SupportedClientVersion] = map
-              }
-            }
-            return final
-          }))
-          return globalStringsForFlavor
-        }),
-        Schedule.spaced(Duration.hours(3))
-      )
+        const globalStringsByFlavor = yield* Cache.make({
+            capacity: SupportedClientVersions.length,
+            timeToLive: Duration.hours(3),
+            lookup: createTranslationMapForFlavor
+        })
 
       type FuzzyResult = {
         key: string
@@ -252,9 +246,9 @@ const ToolkitLayer = toolkit
       ) => {
         query = query.toLowerCase()
         return Effect.logDebug("searching").pipe(
-          Effect.zipRight(Resource.get(globalStringsByFlavorMap)),
-          Effect.map((globalsByFlavor) => {
-            const globalMaps = [globalsByFlavor[flavor]]
+            Effect.zipRight(globalStringsByFlavor.get(flavor)),
+            Effect.map((globalsForFlavor) => {
+                const globalMaps = [globalsForFlavor]
             const langs = [language]
             return fuzzysort.go(query, createFuzzySearchTargets(globalMaps, langs), {
               key: FUZZY_SEARCH_KEY,
@@ -278,21 +272,17 @@ const ToolkitLayer = toolkit
             return acc
           }, {} as Record<GlobalKey, Record<SupportedClientLocale, string>>)
         }),
-        [list_global_strings]: Effect.fn(function*({ clientVersion }) {
-          const keys = yield* Resource.get(globalStringsByFlavorMap).pipe(
-            Effect.map((globalsByGameVersion) => {
-              const x = globalsByGameVersion[clientVersion]
-              return { keys: Object.keys(x) }
-            }),
-            Effect.orDie
-          )
-          return keys
-        }),
+          [list_global_strings]: Effect.fn(function*({ clientVersion }) {
+              const keys = yield* globalStringsByFlavor.get(clientVersion).pipe(
+                  Effect.map((x) => ({ keys: Object.keys(x) })),
+                  Effect.orDie
+              )
+              return keys
+          }),
         [get_string_translations]: Effect.fn(function*({ globalKeys, clientVersion }) {
-          const translations = yield* Resource.get(globalStringsByFlavorMap).pipe(
-            Effect.map((globalsByGameVersion) => {
-              const clientGlobals = globalsByGameVersion[clientVersion]
-              const result: Record<string, Record<SupportedClientLocale, string>> = {}
+            const translations = yield* globalStringsByFlavor.get(clientVersion).pipe(
+                Effect.map((clientGlobals) => {
+                    const result: Record<string, Record<SupportedClientLocale, string>> = {}
 
               for (const key of globalKeys) {
                 if (clientGlobals[key]) {

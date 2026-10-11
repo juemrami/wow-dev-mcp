@@ -1,11 +1,11 @@
 import { AiTool, AiToolkit, McpSchema, McpServer } from "@effect/ai"
 import { HttpBody, HttpClient, HttpClientResponse } from "@effect/platform"
 import { NodeHttpClient } from "@effect/platform-node"
-import { Cache, Duration, Effect, Layer, pipe, Resource, Schedule, Schema } from "effect"
+import { Cache, Duration, Effect, Layer, pipe, Schedule, Schema } from "effect"
 import { isNotUndefined } from "effect/Predicate"
 import fuzzysort from "fuzzysort"
 import type { SupportedClientVersion } from "./GlobalStrings.js"
-import { ClientVersionParam, SupportedClientVersions } from "./GlobalStrings.js"
+import { ClientVersionParam, KethoBranch, SupportedClientVersions } from "./GlobalStrings.js"
 
 const TOOL_DEFAULT_GAME_VERSION: SupportedClientVersion = "mainline"
 
@@ -18,11 +18,11 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
   {
     scoped: Effect.gen(function*() {
       const httpClient = (yield* HttpClient.HttpClient).pipe(
-        HttpClient.filterStatusOk,
-        HttpClient.retry(Schedule.spaced(Duration.seconds(3)))
+          HttpClient.filterStatusOk,
+          HttpClient.retry(Schedule.spaced(Duration.seconds(3)).pipe(Schedule.intersect(Schedule.recurs(3))))
       )
       const getGlobalAPIFileUrl = (version: SupportedClientVersion) =>
-        `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${version}/Resources/GlobalAPI.lua`
+        `https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/${KethoBranch[version]}/Resources/GlobalAPI.lua`
 
       const fetchAndParseApiGlobalsByGameVersion = Effect.fn(function*(version: SupportedClientVersion) {
         const text = yield* pipe(
@@ -35,7 +35,7 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
         for (const line of text.split("\n")) {
           if (line.match(/[{}]/)) continue // ignore lines with braces { }
           if (line.trim().length === 0) continue // ignore empty lines
-          const match = line.match(/"(\w+)"/)
+          const match = line.match(/"(\w.+)"/)
           if (match) {
             collectedGlobals.push(match[1])
           }
@@ -43,21 +43,13 @@ class GlobalAPIListProvider extends Effect.Service<GlobalAPIListProvider>()(
         return collectedGlobals
       })
 
-      const cachedGlobalsByGameVersion = yield* Resource.auto(
-        Effect.gen(function*() {
-          const apiGlobals = {} as Record<SupportedClientVersion, Array<GlobalAPIName>>
-          for (const gameVersion of SupportedClientVersions) {
-            apiGlobals[gameVersion] = yield* fetchAndParseApiGlobalsByGameVersion(gameVersion)
-          }
-          return yield* Effect.succeed(apiGlobals)
-        }),
-        Schedule.spaced(Duration.hours(1))
-      )
+      const cachedGlobalsByGameVersion = yield* Cache.make({
+        capacity: SupportedClientVersions.length,
+        timeToLive: Duration.hours(1),
+        lookup: fetchAndParseApiGlobalsByGameVersion
+      })
       return {
-        get: (version: SupportedClientVersion = TOOL_DEFAULT_GAME_VERSION) =>
-          Resource.get(cachedGlobalsByGameVersion).pipe(
-            Effect.map((globals) => globals[version])
-          )
+        get: (version: SupportedClientVersion = TOOL_DEFAULT_GAME_VERSION) => cachedGlobalsByGameVersion.get(version)
       }
     }),
     dependencies: [NodeHttpClient.layerUndici]
@@ -81,8 +73,8 @@ class GlobalAPISearchProvider extends Effect.Service<GlobalAPISearchProvider>()(
           limit: 100,
           key: "target"
         })
-        console.error("query:", query)
-        console.error("Fuzzy search results:", results)
+        //console.error("query:", query)
+        //console.error("Fuzzy search results:", results)
         return results.reduce((acc, res) => {
           acc.push(res.obj.key)
           return acc
@@ -163,7 +155,7 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
 
     const expandMediawikiTemplates = (pageContent: string) =>
       pipe(
-        Effect.log(`Expanding MediaWiki templates for ${pageContent}`),
+        Effect.log(`Expanding MediaWiki templates (${pageContent.length} chars)`),
         Effect.andThen(
           httpClient.post(`https://warcraft.wiki.gg/api.php`, {
             urlParams: {
@@ -269,7 +261,7 @@ class WarcraftWikiGGProvider extends Effect.Service<WarcraftWikiGGProvider>()("W
 // Resources
 const clientVersionParam = McpSchema.param("clientVersion", Schema.Literal(...SupportedClientVersions))
 const ApiListMcpResource = McpServer
-  .resource`resource://lua_global_apis/valid_api_names?clientVersion=${clientVersionParam}`({
+  .resource`resource://lua_global_apis/valid_api_names/${clientVersionParam}`({
     name: "Valid global API names by game version",
     mimeType: "application/json",
     description:
@@ -319,7 +311,7 @@ const ToolkitSchema = AiToolkit.make(
       .replace("{{flavors}}", SupportedClientVersions.join(", "))
       .replace("{{default}}", TOOL_DEFAULT_GAME_VERSION),
     parameters: {
-      clientVersion: ClientVersionParam.annotations({ default: TOOL_DEFAULT_GAME_VERSION })
+      clientVersion: Schema.UndefinedOr(ClientVersionParam).annotations({ default: TOOL_DEFAULT_GAME_VERSION })
     },
     success: Schema.Struct({
       valid: Schema.Array(Schema.String).annotations({
